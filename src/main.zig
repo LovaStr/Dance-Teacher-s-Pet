@@ -609,7 +609,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     app.setBusyCheck(busyCheck);
 
     try app.run(gpa, AppState, &st, .{
-        .title = "lmp3 — zigui audio player",
+        .title = "lmp3 — audio player",
         .width = layout.window_w,
         .height = layout.window_h,
         .min_width = layout.window_min_w,
