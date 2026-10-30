@@ -1,4 +1,4 @@
-# lmp3_zigui
+# lmp3_v2
 
 ## What this project is
 

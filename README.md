@@ -1,4 +1,4 @@
-# lmp3_zigui
+# lmp3_v2
 
 A small, dependency-light audio player for Windows, written end to end in Zig, with a native-looking UI and no runtime to install.
 
@@ -25,8 +25,8 @@ No accounts, API keys or external services are needed.
 ### Installation
 
 ```sh
-git clone https://github.com/LovaStr/lmp3_zigui
-cd lmp3_zigui
+git clone https://github.com/LovaStr/lmp3_v2
+cd lmp3_v2
 ```
 
 Dependencies (zigui, dr_libs) are pinned with hashes in `build.zig.zon`, so the first `zig build` fetches them.
@@ -76,7 +76,7 @@ Defaults at start: volume 100 %, continuous playback off, remove played tracks o
 Three layers with one direction of dependency: `decoder.zig` turns a file into PCM, `audio.zig` feeds that PCM to the zoto player, and `main.zig` holds the application state and the zigui views. The UI only calls `Audio` methods and reads `Audio` state; it never touches decoder or zoto internals. Every track is decoded fully into memory, folded to stereo and linearly resampled to the single output format (stereo float32 @ 44.1 kHz). Logic that does not need SDL, zigui or an audio device lives in small pure modules so it can be unit-tested. All dr_libs details stay behind a tiny C shim (`lm_decode.c`).
 
 ```
-lmp3_zigui/
+lmp3_v2/
 ├── src/
 │   ├── main.zig         # app state, zigui views, file dialogs, frame hook
 │   ├── audio.zig        # PCM -> zoto player: play, pause, seek, volume

@@ -1,7 +1,7 @@
 .{
-    .name = .lmp3_zigui,
+    .name = .lmp3_v2,
     .version = "0.1.0",
-    .fingerprint = 0x938cb70b5a17c0de,
+    .fingerprint = 0xa80eb4966164b28f,
     // zigui does not build on 0.17 (@cImport was removed); zoto's Windows driver
     // needed patching for 0.16 (see third_party/zoto/PATCHES.md).
     .minimum_zig_version = "0.16.0",
