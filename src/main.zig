@@ -303,8 +303,73 @@ fn onRandom(st: *AppState) void {
     st.setStatus("Play list shuffled", .{});
 }
 
+// zigui's file dialog only picks a single file, so "Add files" talks to SDL's
+// multi-select dialog directly. SDL may call back on another thread: the
+// callback only stores the picked paths (NUL-separated) and wakes the event
+// loop; `frameHook` adds them on the main thread.
+var g_files_open = false; // main thread only: a dialog is showing
+var g_files_done: std.atomic.Value(bool) = .init(false);
+var g_files_picked: ?[]u8 = null; // guarded by g_files_done
+
+fn filesDialogThunk(_: ?*anyopaque, filelist: [*c]const [*c]const u8, _: c_int) callconv(.c) void {
+    var picked: ?[]u8 = null;
+    if (filelist != null and filelist[0] != null) {
+        var buf: std.ArrayList(u8) = .empty;
+        var i: usize = 0;
+        while (filelist[i] != null) : (i += 1) {
+            buf.appendSlice(std.heap.c_allocator, std.mem.span(filelist[i])) catch break;
+            buf.append(std.heap.c_allocator, 0) catch break;
+        }
+        picked = buf.toOwnedSlice(std.heap.c_allocator) catch null;
+    }
+    g_files_picked = picked;
+    g_files_done.store(true, .release);
+    var ev = std.mem.zeroes(sdl.SDL_Event);
+    ev.type = sdl.SDL_EVENT_USER;
+    _ = sdl.SDL_PushEvent(&ev);
+}
+
 fn onAddFile(_: *AppState) void {
-    _ = app.openFileDialog(&audio_filters, null);
+    if (g_files_open) return;
+    g_files_open = true;
+    g_files_done.store(false, .release);
+    sdl.SDL_ShowOpenFileDialog(
+        filesDialogThunk,
+        null,
+        sdl.SDL_GetKeyboardFocus(),
+        &audio_filters,
+        audio_filters.len,
+        null,
+        true, // allow_many
+    );
+}
+
+/// Add the files picked in the multi-select dialog, once it has finished.
+fn takePickedFiles(st: *AppState) void {
+    if (!g_files_open or !g_files_done.load(.acquire)) return;
+    g_files_open = false;
+    const picked = g_files_picked orelse return;
+    g_files_picked = null;
+    defer std.heap.c_allocator.free(picked);
+
+    const before = st.entries.items.len;
+    var failed: ?[]const u8 = null;
+    var failure: anyerror = undefined;
+    var it = std.mem.splitScalar(u8, picked, 0);
+    while (it.next()) |path| {
+        if (path.len == 0) continue;
+        addPath(st, path) catch |err| {
+            failed = path;
+            failure = err;
+        };
+    }
+    if (failed) |path| {
+        st.setStatus("Could not add \"{s}\": {s}", .{ util.baseName(path), describeError(failure) });
+    } else if (st.entries.items.len == before) {
+        st.setStatus("No supported audio files selected", .{});
+    } else {
+        st.setStatus("Added {d} track(s)", .{st.entries.items.len - before});
+    }
 }
 fn onAddFolder(_: *AppState) void {
     _ = app.openFolderDialog(null);
@@ -323,6 +388,7 @@ fn frameHook() void {
     const st = g_app orelse return;
 
     // Finished file / folder pickers.
+    takePickedFiles(st);
     switch (app.takeFileDialogResult(st.gpa)) {
         .none, .canceled => {},
         .picked => |path| {
@@ -609,7 +675,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     app.setBusyCheck(busyCheck);
 
     try app.run(gpa, AppState, &st, .{
-        .title = "lmp3 — zigui audio player",
+        .title = "lmp3 — audio player",
         .width = layout.window_w,
         .height = layout.window_h,
         .min_width = layout.window_min_w,

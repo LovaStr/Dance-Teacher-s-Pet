@@ -51,6 +51,9 @@ pub fn build(b: *std.Build) void {
 
     addDecoderC(b, exe_mod, drlibs_dep);
 
+    // Windows: embed the app icon (resource id 1, which SDL uses for the window too).
+    if (target.result.os.tag == .windows) exe_mod.addWin32ResourceFile(.{ .file = b.path("assets/lmp3.rc") });
+
     const exe = b.addExecutable(.{ .name = "lmp3", .root_module = exe_mod });
     // Windows: a GUI-subsystem exe opens only the player window, no console.
     if (target.result.os.tag == .windows and !console) exe.subsystem = .windows;
