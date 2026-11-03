@@ -12,6 +12,7 @@ const app = @import("zigui_app");
 const decoder = @import("decoder.zig");
 const util = @import("util.zig");
 const transport = @import("transport.zig");
+const waveform = @import("waveform.zig");
 const Audio = @import("audio.zig").Audio;
 
 const sdl = app.c;
@@ -54,7 +55,13 @@ const layout = struct {
     const row_spacing = 8;
     const empty_spacing = 6;
 
-    const hero_icon = 44;
+    /// Height of the loudness graph (left channel below, right above the centre line).
+    const wave_h = 100;
+    /// The graph is rendered at this many pixels per point, for sharp edges.
+    const wave_scale = 2;
+    const gear_icon = 20;
+    const settings_w = 320;
+    const settings_spacing = 10;
     const button_icon = 30;
     const volume_icon = 18;
     const row_icon = 14;
@@ -89,6 +96,16 @@ const AppState = struct {
     cue: usize = 0,
     audio: ?Audio = null,
     volume: zigui.State(f32),
+    /// Settings dialog (gear button) and the loudness graph options it edits.
+    show_settings: zigui.State(bool),
+    wave_lines: zigui.State(f32),
+    wave_line_w: zigui.State(f32),
+    /// Index into `wave_scale_names` (and the `waveform.Scale` enum).
+    wave_scale: zigui.State(i64),
+    /// Window width seen by the previous frame (0 before the first one).
+    last_window_w: f32 = 0,
+    /// Cached picture of the loudness graph (see `waveView`).
+    wave_img: WaveImage = .{},
     list_scroll: zigui.ScrollState = .{},
     /// `SDL_GetTicks` when the current track was first seen to have ended; the
     /// next track starts shortly after so the device can drain its buffer.
@@ -288,6 +305,14 @@ fn onToggleAutoAdvance(st: *AppState) void {
     st.setStatus("{s}", .{if (st.auto_advance) "Continuous playback" else "Stop after current track"});
 }
 
+fn onOpenSettings(st: *AppState) void {
+    st.show_settings.set(true);
+}
+
+fn onCloseSettings(st: *AppState) void {
+    st.show_settings.set(false);
+}
+
 const audio_filters = [_]app.FileFilter{
     .{ .name = "Audio files (mp3, flac, wav)", .pattern = "mp3;flac;wav" },
     .{ .name = "All files", .pattern = "*" },
@@ -397,6 +422,13 @@ fn frameHook() void {
         },
     }
 
+    // The graph gets one line per point of window width (after a resize).
+    const win_w = zigui.view.viewport().width;
+    if (win_w != st.last_window_w) {
+        if (st.last_window_w != 0) st.wave_lines.set(std.math.clamp(@round(win_w), waveform.min_bars, waveform.max_bars));
+        st.last_window_w = win_w;
+    }
+
     const a = if (st.audio) |*au| au else return;
     a.setVolume(st.volume.get());
 
@@ -474,6 +506,124 @@ fn seekSet(ctx: *anyopaque, v: f32) void {
     };
 }
 
+/// What the cached loudness picture was rendered from. The picture is only
+/// rebuilt when one of these changes (window width, settings, colour, track).
+const WaveKey = struct {
+    w: u32,
+    h: u32,
+    bars: usize,
+    scale: waveform.Scale,
+    line_w: f32,
+    rgb: [3]u8,
+    gen: u32,
+};
+
+/// Labels of the "Scale" picker, in `waveform.Scale` order.
+const wave_scale_names = [_][]const u8{ "dB", "Linear" };
+
+/// Address and size of every pixel buffer ever handed to the renderer. zigui
+/// caches an image's texture by (address, size), so a new picture must never
+/// reuse that pair for different pixels.
+const PixelKey = struct { addr: usize, w: u32, h: u32 };
+
+const WaveImage = struct {
+    pixels: []u8 = &.{},
+    key: ?WaveKey = null,
+    used: std.ArrayList(PixelKey) = .empty,
+
+    fn deinit(self: *WaveImage, gpa: std.mem.Allocator) void {
+        gpa.free(self.pixels);
+        self.used.deinit(gpa);
+    }
+
+    fn seen(self: *const WaveImage, k: PixelKey) bool {
+        for (self.used.items) |u| {
+            if (u.addr == k.addr and u.w == k.w and u.h == k.h) return true;
+        }
+        return false;
+    }
+
+    /// Render `peaks` into a fresh buffer and make it the current picture.
+    fn rebuild(self: *WaveImage, gpa: std.mem.Allocator, key: WaveKey, peaks: *const waveform.Peaks) !void {
+        const len = @as(usize, key.w) * key.h * 4;
+        // Buffers whose address was used before at this size are held back
+        // (so the allocator hands out another) and released afterwards.
+        var rejected: std.ArrayList([]u8) = .empty;
+        defer {
+            for (rejected.items) |r| gpa.free(r);
+            rejected.deinit(gpa);
+        }
+        const buf = while (true) {
+            const b = try gpa.alloc(u8, len);
+            if (!self.seen(.{ .addr = @intFromPtr(b.ptr), .w = key.w, .h = key.h })) break b;
+            rejected.append(gpa, b) catch {
+                gpa.free(b);
+                return error.OutOfMemory;
+            };
+        };
+        errdefer gpa.free(buf);
+        try self.used.append(gpa, .{ .addr = @intFromPtr(buf.ptr), .w = key.w, .h = key.h });
+        waveform.render(buf, key.w, key.h, peaks, key.bars, key.scale, key.line_w, key.rgb);
+        gpa.free(self.pixels);
+        self.pixels = buf;
+        self.key = key;
+    }
+};
+
+/// The "Number of lines" setting as a whole number inside its allowed range.
+fn waveBars(st: *const AppState) usize {
+    const v = std.math.clamp(@round(st.wave_lines.get()), waveform.min_bars, waveform.max_bars);
+    return @intFromFloat(v);
+}
+
+fn waveScale(st: *const AppState) waveform.Scale {
+    return std.enums.fromInt(waveform.Scale, st.wave_scale.get()) orelse .db;
+}
+
+fn rgbOf(c: zigui.Color) [3]u8 {
+    return .{
+        @intFromFloat(@round(std.math.clamp(c.r, 0, 1) * 255)),
+        @intFromFloat(@round(std.math.clamp(c.g, 0, 1) * 255)),
+        @intFromFloat(@round(std.math.clamp(c.b, 0, 1) * 255)),
+    };
+}
+
+/// Loudness graph: one vertical line per window, growing up from the (invisible)
+/// centre line for the right channel and down from it for the left channel.
+/// Drawn as a picture that is only re-rendered when its inputs change, not on
+/// every frame while the track plays.
+fn waveView(st: *AppState) zigui.View {
+    const empty = zigui.Spacer().frameMaxWidth().frameHeight(layout.wave_h);
+    const a = if (st.audio) |*au| au else return empty;
+    if (st.current == null) return empty;
+    const width_pt = @floor(zigui.viewport().width - 2 * layout.now_playing_pad);
+    if (width_pt < 1) return empty;
+
+    const key: WaveKey = .{
+        .w = @intFromFloat(width_pt * layout.wave_scale),
+        .h = layout.wave_h * layout.wave_scale,
+        .bars = waveBars(st),
+        .scale = waveScale(st),
+        .line_w = st.wave_line_w.get() * layout.wave_scale,
+        .rgb = rgbOf(colors().accent),
+        .gen = a.peaks_gen,
+    };
+    const same = if (st.wave_img.key) |k| std.meta.eql(k, key) else false;
+    if (!same) st.wave_img.rebuild(st.gpa, key, &a.peaks) catch return empty;
+
+    const ctx = zigui.view.buildAlloc().create(WavePaint) catch return empty;
+    ctx.* = .{ .image = .{ .width = key.w, .height = key.h, .pixels = st.wave_img.pixels } };
+    return zigui.Drawing(WavePaint, ctx, paintWave).frameMaxWidth().frameHeight(layout.wave_h);
+}
+
+const WavePaint = struct { image: zigui.canvas.Image };
+
+/// Stretch the cached picture over exactly the area the view got, which is the
+/// same width as the seek slider below it (both fill the column).
+fn paintWave(ctx: *const WavePaint, pen: *zigui.Pen, r: zigui.Rect) std.mem.Allocator.Error!void {
+    try pen.canvas.drawImage(r, ctx.image);
+}
+
 fn nowPlaying(st: *AppState) zigui.View {
     const c = colors();
 
@@ -495,7 +645,11 @@ fn nowPlaying(st: *AppState) zigui.View {
     }
 
     return zigui.VStack(.{
-        zigui.Icon(.audio_lines, layout.hero_icon, c.accent),
+        zigui.HStack(.{
+            zigui.Spacer(),
+            zigui.IconButton(.settings, layout.gear_icon, zigui.actionCtx(AppState, st, onOpenSettings)),
+        }),
+        waveView(st),
         zigui.Text(title).font(.title2).truncated(),
         zigui.Text(subtitle).font(.subheadline).foreground(c.secondary_label),
         zigui.Slider(.{ .ctx = st, .getFn = seekGet, .setFn = seekSet }, 0, 1).frameMaxWidth(),
@@ -505,6 +659,23 @@ fn nowPlaying(st: *AppState) zigui.View {
             zigui.Text(fmtTime(dur)).font(.caption).foreground(c.secondary_label),
         }),
     }).spacing(layout.now_playing_spacing).padding(layout.now_playing_pad).frameMaxWidth();
+}
+
+fn settingsView(st: *AppState) zigui.View {
+    const c = colors();
+    return zigui.VStack(.{
+        zigui.Text("Settings").font(.title3),
+        zigui.Text(zigui.components.fmt("Number of lines: {d}", .{waveBars(st)})).font(.subheadline).foreground(c.secondary_label),
+        zigui.Slider(st.wave_lines.binding(), waveform.min_bars, waveform.max_bars).frameMaxWidth(),
+        zigui.Text(zigui.components.fmt("Line width: {d:.1}", .{st.wave_line_w.get()})).font(.subheadline).foreground(c.secondary_label),
+        zigui.Slider(st.wave_line_w.binding(), 0.1, 5.0).frameMaxWidth(),
+        zigui.Text("Scale").font(.subheadline).foreground(c.secondary_label),
+        zigui.Picker(st.wave_scale.binding(), &wave_scale_names),
+        zigui.HStack(.{
+            zigui.Spacer(),
+            zigui.Button("Close", zigui.actionCtx(AppState, st, onCloseSettings)),
+        }).frameMaxWidth(),
+    }).alignment(.leading).spacing(layout.settings_spacing).padding(layout.now_playing_pad).frameWidth(layout.settings_w);
 }
 
 fn controls(st: *AppState) zigui.View {
@@ -630,7 +801,8 @@ fn body(st: *AppState) zigui.View {
         playlist(st),
         zigui.Divider(),
         statusBar(st),
-    }).spacing(0).frameMaxWidth().frameMaxHeight();
+    }).spacing(0).frameMaxWidth().frameMaxHeight()
+        .alert(st.show_settings.binding(), settingsView(st));
 }
 
 // --- entry point ------------------------------------------------------------
@@ -641,11 +813,20 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var st = AppState{
         .gpa = gpa,
         .volume = zigui.State(f32).init(gpa, 1.0),
+        .show_settings = zigui.State(bool).init(gpa, false),
+        .wave_lines = zigui.State(f32).init(gpa, waveform.default_bars),
+        .wave_line_w = zigui.State(f32).init(gpa, 1.5),
+        .wave_scale = zigui.State(i64).init(gpa, @intFromEnum(waveform.Scale.linear)),
     };
     defer {
         freeEntries(&st);
         st.entries.deinit(gpa);
         st.volume.deinit();
+        st.show_settings.deinit();
+        st.wave_lines.deinit();
+        st.wave_line_w.deinit();
+        st.wave_scale.deinit();
+        st.wave_img.deinit(gpa);
     }
     g_app = &st;
 
