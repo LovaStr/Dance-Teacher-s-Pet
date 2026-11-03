@@ -85,14 +85,15 @@ test "isSupported rejects other files" {
 // --- resample ---------------------------------------------------------------
 
 test "resample doubles the frame count when going 22.05 kHz -> 44.1 kHz" {
-    const in = [_]f32{ 0.5, 0.5 } ** 100; // 100 frames
+    const in: [200]f32 = @splat(0.5); // 100 frames
     const out = try decoder.resample(gpa, &in, 22050);
     defer gpa.free(out);
     try expectEqual(@as(usize, 200 * 2), out.len);
 }
 
 test "resample keeps a constant signal constant" {
-    const in = [_]f32{ 0.25, -0.75 } ** 64;
+    var in: [128]f32 = undefined;
+    for (&in, 0..) |*s, i| s.* = if (i % 2 == 0) 0.25 else -0.75;
     const out = try decoder.resample(gpa, &in, 22050);
     defer gpa.free(out);
     for (0..out.len / 2) |i| {
@@ -115,7 +116,7 @@ test "resample interpolates linearly and holds the last frame" {
 }
 
 test "resample 48 kHz -> 44.1 kHz gives about 44100 frames per second" {
-    const in = [_]f32{ 0, 0 } ** 48000;
+    const in: [96000]f32 = @splat(0);
     const out = try decoder.resample(gpa, &in, 48000);
     defer gpa.free(out);
     const frames: i64 = @intCast(out.len / 2);
@@ -123,7 +124,7 @@ test "resample 48 kHz -> 44.1 kHz gives about 44100 frames per second" {
 }
 
 test "resample rejects source rates outside the supported range" {
-    const in = [_]f32{ 0, 0 } ** 100;
+    const in: [200]f32 = @splat(0);
     try std.testing.expectError(error.UnsupportedSampleRate, decoder.resample(gpa, &in, 0));
     try std.testing.expectError(error.UnsupportedSampleRate, decoder.resample(gpa, &in, decoder.min_source_rate - 1));
     try std.testing.expectError(error.UnsupportedSampleRate, decoder.resample(gpa, &in, decoder.max_source_rate + 1));
@@ -131,7 +132,7 @@ test "resample rejects source rates outside the supported range" {
 }
 
 test "resample accepts the edges of the supported range" {
-    const in = [_]f32{ 0, 0 } ** 100;
+    const in: [200]f32 = @splat(0);
     const lo = try decoder.resample(gpa, &in, decoder.min_source_rate);
     gpa.free(lo);
     const hi = try decoder.resample(gpa, &in, decoder.max_source_rate);
@@ -299,7 +300,7 @@ fn verbatimFlac(frames: u16, declared_frames: u64) ![]u8 {
     try f.appendSlice(gpa, &.{ 0, 0, 0, 0, 0, 0 }); // min/max frame size: unknown
     const packed_info: u64 = (@as(u64, 44100) << 44) | (@as(u64, 15) << 36) | declared_frames;
     try f.appendSlice(gpa, &std.mem.toBytes(std.mem.nativeToBig(u64, packed_info)));
-    try f.appendSlice(gpa, &([_]u8{0} ** 16)); // MD5: unset
+    try f.appendSlice(gpa, &@as([16]u8, @splat(0))); // MD5: unset
 
     const frame_start = f.items.len;
     // Frame header: fixed block size, 16-bit block size follows, rate from

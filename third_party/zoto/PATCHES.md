@@ -1,6 +1,6 @@
 # Local patches to braheezy/zoto
 
-Vendored from https://github.com/braheezy/zoto (see LICENSE) so the Windows build works on Zig 0.16:
+Vendored from https://github.com/braheezy/zoto (see LICENSE) so the Windows build works on Zig 0.16 (it also builds unchanged on 0.17):
 
 * `src/driver_windows.zig`: `std.Thread.Mutex`/`Condition` no longer exist -> small wrappers over
   `std.Io.Mutex`/`Condition` (same as mux.zig); `HRESULT` and `BOOL` defined locally

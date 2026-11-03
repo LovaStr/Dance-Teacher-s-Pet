@@ -17,7 +17,7 @@ It is also a working example of combining [zigui](https://github.com/ddalcu/zigu
 * Windows (playback uses WASAPI; no other platform is supported)
 * To run: nothing beyond the release zip
 * To build from source:
-  * **Zig 0.16.0** (do not use 0.17: zigui uses `@cImport`, which 0.17 removed)
+  * **Zig 0.17.0**
   * Nothing else: SDL3 is fetched as source and compiled statically into the exe
 
 No accounts, API keys or external services are needed.
@@ -93,7 +93,7 @@ lmp3_v2/
 
 | Component | Choice | Reason |
 |---|---|---|
-| Language | Zig 0.16.0 | One toolchain for the app, the C shim and cross-compilation |
+| Language | Zig 0.17.0 | One toolchain for the app, the C shim and cross-compilation |
 | UI | [ddalcu/zigui](https://github.com/ddalcu/zigui) on [SDL3](https://github.com/libsdl-org/SDL), linked statically | Declarative views and a native-looking window without a runtime or extra DLL |
 | Decoding | [mackron/dr_libs](https://github.com/mackron/dr_libs) (`dr_mp3`, `dr_flac`, `dr_wav`) | Small single-header decoders for all three formats |
 | Playback | [braheezy/zoto](https://github.com/braheezy/zoto), vendored and patched | Minimal audio output; vendored so it can be trimmed to the WASAPI driver |

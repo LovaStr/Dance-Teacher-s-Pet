@@ -18,6 +18,14 @@ pub fn build(b: *std.Build) void {
     // zigui's SDL3 window/event-loop runtime. The zigui package exports only the
     // pure-Zig `zigui` module, so compile `src/app.zig` from the dependency
     // directly (this is exactly what zigui's own examples do).
+    // Zig 0.17 has no `@cImport`: app.zig imports SDL's headers as `sdl_c`,
+    // translated from zigui's own src/sdl_c.h.
+    const sdl_c = b.addTranslateC(.{
+        .root_source_file = zigui_dep.path("src/sdl_c.h"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
     const app_mod = b.createModule(.{
         .root_source_file = zigui_dep.path("src/app.zig"),
         .target = target,
@@ -25,7 +33,8 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .imports = &.{.{ .name = "zigui", .module = zigui_mod }},
     });
-    linkSdl3(b, app_mod, target, optimize);
+    app_mod.addImport("sdl_c", sdl_c.createModule());
+    linkSdl3(b, app_mod, sdl_c, target, optimize);
 
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -51,7 +60,7 @@ pub fn build(b: *std.Build) void {
 
     const run = b.addRunArtifact(exe);
     run.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run.addArgs(args);
+    run.addPassthruArgs();
     b.step("run", "Run the player (pass files/folders after --)").dependOn(&run.step);
 
     // Unit tests (tests/*.zig). They only need the decoder and its C shim, so
@@ -109,11 +118,12 @@ fn addDecoderC(b: *std.Build, m: *std.Build.Module, drlibs_dep: *std.Build.Depen
     });
 }
 
-fn linkSdl3(b: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
+fn linkSdl3(b: *std.Build, m: *std.Build.Module, tc: *std.Build.Step.TranslateC, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
     if (target.result.os.tag == .windows) {
         const sdl_dep = b.dependency("sdl3", .{});
         const lib = buildSdl3(b, sdl_dep, target, optimize);
         m.addIncludePath(sdl_dep.path("include"));
+        tc.addIncludePath(sdl_dep.path("include"));
         m.addCMacro("SDL_STATIC_LIB", "1");
         m.linkLibrary(lib);
         return;
@@ -124,6 +134,7 @@ fn linkSdl3(b: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTarge
         m.addIncludePath(.{ .cwd_relative = brew ++ "/include" });
         m.addLibraryPath(.{ .cwd_relative = brew ++ "/lib" });
         m.addRPath(.{ .cwd_relative = brew ++ "/lib" });
+        tc.addIncludePath(.{ .cwd_relative = brew ++ "/include" });
     }
     m.linkSystemLibrary("SDL3", .{});
 }

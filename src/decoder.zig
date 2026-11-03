@@ -96,7 +96,7 @@ fn validSourceRate(rate: u32) bool {
 
 /// Decode the whole file to stereo @ 44.1 kHz float32.
 pub fn load(gpa: std.mem.Allocator, path: []const u8) Error!*Track {
-    const cpath = try gpa.dupeZ(u8, path);
+    const cpath = try gpa.dupeSentinel(u8, path, 0);
     defer gpa.free(cpath);
 
     var src_channels: u32 = 0;

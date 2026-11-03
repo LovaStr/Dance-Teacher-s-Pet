@@ -148,7 +148,7 @@ fn addFile(st: *AppState, path: []const u8) error{OutOfMemory}!void {
 /// Add a file, or every supported file found under a folder (sorted by path).
 /// Files added before an error occurs stay in the play list.
 fn addPath(st: *AppState, path: []const u8) AddError!void {
-    const cpath = try st.gpa.dupeZ(u8, path);
+    const cpath = try st.gpa.dupeSentinel(u8, path, 0);
     defer st.gpa.free(cpath);
 
     var info: sdl.SDL_PathInfo = undefined;
@@ -680,5 +680,5 @@ pub fn main(init: std.process.Init.Minimal) !void {
         .height = layout.window_h,
         .min_width = layout.window_min_w,
         .min_height = layout.window_min_h,
-    }, body);
+    }, body, null);
 }
