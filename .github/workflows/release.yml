@@ -21,28 +21,17 @@ jobs:
         with:
           version: 0.16.0
 
-      - name: Fetch SDL3 MinGW development package
-        run: |
-          mkdir -p sdl3
-          gh release download --repo libsdl-org/SDL --pattern 'SDL3-devel-*-mingw.tar.gz' --dir sdl3
-          tar -xzf sdl3/SDL3-devel-*-mingw.tar.gz -C sdl3
-          prefix=$(find sdl3 -type d -name x86_64-w64-mingw32 | head -n 1)
-          echo "SDL3_PREFIX=$GITHUB_WORKSPACE/$prefix" >> "$GITHUB_ENV"
-
       - name: Unit tests
         run: zig build test
 
-      - name: Build (Windows x86_64, ReleaseFast)
-        run: >
-          zig build -Doptimize=ReleaseFast -Dtarget=x86_64-windows-gnu
-          -Dsdl3-prefix="$SDL3_PREFIX"
-          -Dsdl3-dll="$SDL3_PREFIX/bin/SDL3.dll"
+      - name: Build (Windows x86_64, ReleaseFast; SDL3 is compiled in statically)
+        run: zig build -Doptimize=ReleaseFast -Dtarget=x86_64-windows-gnu
 
       - name: Package
         run: |
           short=$(git rev-parse --short HEAD)
           echo "VERSION=build-${{ github.run_number }}-$short" >> "$GITHUB_ENV"
-          (cd zig-out/bin && zip -9 "$GITHUB_WORKSPACE/lmp3-windows-x64.zip" lmp3.exe SDL3.dll)
+          (cd zig-out/bin && zip -9 "$GITHUB_WORKSPACE/lmp3-windows-x64.zip" lmp3.exe)
 
       - uses: actions/upload-artifact@v4
         if: github.event_name == 'pull_request'
