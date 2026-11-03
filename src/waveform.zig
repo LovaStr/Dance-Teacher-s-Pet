@@ -14,20 +14,34 @@ pub const base_bins = 2 * max_bars;
 /// Peaks at or below this level (dBFS) map to 0; 0 dBFS maps to 1.
 pub const floor_db: f32 = -60;
 
-/// Linear peak (0..1) of the left and right channel in each of `base_bins` windows.
+/// Linear peak (0..1) and mean square of the left and right channel in each of
+/// `base_bins` windows. The mean square (not the RMS) is stored so that windows
+/// can be merged by plain averaging: the RMS of a merged bar is the square root
+/// of the mean of its windows' mean squares.
 pub const Peaks = struct {
     left: [base_bins]f32 = @splat(0),
     right: [base_bins]f32 = @splat(0),
+    left_ms: [base_bins]f32 = @splat(0),
+    right_ms: [base_bins]f32 = @splat(0),
 };
 
 pub const Bar = struct {
-    /// 0..1 on the dB scale.
+    /// Peak, 0..1 on the chosen scale.
     left: f32,
     right: f32,
+    /// RMS, 0..1 on the chosen scale.
+    left_rms: f32,
+    right_rms: f32,
 };
 
 /// How a peak is mapped to a bar length.
 pub const Scale = enum { db, linear };
+
+/// What each bar shows: the peak, the RMS, or the RMS drawn over a faint peak.
+pub const Display = enum { peak, rms, both };
+
+/// Opacity of the peak behind the RMS in `Display.both`.
+const peak_alpha: f32 = 0.4;
 
 /// Map a linear peak (0..1) to 0..1 on a dB scale.
 pub fn levelFromPeak(peak: f32) f32 {
@@ -45,31 +59,45 @@ pub fn level(peak: f32, scale: Scale) f32 {
 }
 
 /// `samples` is interleaved L/R. Each bin covers an equal share of the frames
-/// and holds the largest absolute sample in it.
-pub fn analyze(samples: []const f32) Peaks {
-    var p: Peaks = .{};
+/// and holds the largest absolute sample and the mean square in it. Fills `p`
+/// in place: it is too big to be returned by value comfortably.
+pub fn analyze(p: *Peaks, samples: []const f32) void {
     const frames = samples.len / 2;
-    if (frames == 0) return p;
+    if (frames == 0) {
+        @memset(&p.left, 0);
+        @memset(&p.right, 0);
+        @memset(&p.left_ms, 0);
+        @memset(&p.right_ms, 0);
+        return;
+    }
     for (0..base_bins) |i| {
         const start = frames * i / base_bins;
         const end = @min(@max(frames * (i + 1) / base_bins, start + 1), frames);
         var l: f32 = 0;
         var r: f32 = 0;
+        var l2: f32 = 0;
+        var r2: f32 = 0;
         for (start..end) |f| {
-            l = @max(l, @abs(samples[f * 2]));
-            r = @max(r, @abs(samples[f * 2 + 1]));
+            const ls = samples[f * 2];
+            const rs = samples[f * 2 + 1];
+            l = @max(l, @abs(ls));
+            r = @max(r, @abs(rs));
+            l2 += ls * ls;
+            r2 += rs * rs;
         }
+        const n: f32 = @floatFromInt(end - start);
         p.left[i] = l;
         p.right[i] = r;
+        p.left_ms[i] = l2 / n;
+        p.right_ms[i] = r2 / n;
     }
-    return p;
 }
 
 /// Rasterize the graph into `pixels` (RGBA8, `w` x `h`, straight alpha): `bars`
 /// vertical lines of width `line_w` pixels, the right channel growing up and
 /// the left channel down from the horizontal centre line. Edges are
 /// anti-aliased through the alpha channel; the colour is `rgb` everywhere.
-pub fn render(pixels: []u8, w: u32, h: u32, peaks: *const Peaks, bars: usize, scale: Scale, line_w: f32, rgb: [3]u8) void {
+pub fn render(pixels: []u8, w: u32, h: u32, peaks: *const Peaks, bars: usize, scale: Scale, display: Display, line_w: f32, rgb: [3]u8) void {
     std.debug.assert(pixels.len == @as(usize, w) * h * 4);
     var k: usize = 0;
     while (k < pixels.len) : (k += 4) {
@@ -91,22 +119,30 @@ pub fn render(pixels: []u8, w: u32, h: u32, peaks: *const Peaks, bars: usize, sc
         for (first..last) |col| {
             const cf: f32 = @floatFromInt(col);
             const cx = std.math.clamp(@min(x1, cf + 1) - @max(x0, cf), 0, 1);
-            fillSpan(pixels, w, h, col, mid - b.right * mid, mid, cx);
-            fillSpan(pixels, w, h, col, mid, mid + b.left * mid, cx);
+            // The RMS never exceeds the peak, so drawing it second keeps it on top.
+            if (display != .rms) {
+                const o: f32 = if (display == .both) peak_alpha else 1;
+                fillSpan(pixels, w, h, col, mid - b.right * mid, mid, cx, o);
+                fillSpan(pixels, w, h, col, mid, mid + b.left * mid, cx, o);
+            }
+            if (display != .peak) {
+                fillSpan(pixels, w, h, col, mid - b.right_rms * mid, mid, cx, 1);
+                fillSpan(pixels, w, h, col, mid, mid + b.left_rms * mid, cx, 1);
+            }
         }
     }
 }
 
 /// Raise the alpha of column `col` between rows `y0` and `y1` (fractional ends
-/// get partial coverage), scaled by the horizontal coverage `cx`.
-fn fillSpan(pixels: []u8, w: u32, h: u32, col: usize, y0: f32, y1: f32, cx: f32) void {
+/// get partial coverage), scaled by the horizontal coverage `cx` and `opacity`.
+fn fillSpan(pixels: []u8, w: u32, h: u32, col: usize, y0: f32, y1: f32, cx: f32, opacity: f32) void {
     if (y1 - y0 < 0.01) return;
     const first: usize = @intFromFloat(@floor(@max(y0, 0)));
     const last: usize = @intFromFloat(@ceil(@min(y1, @as(f32, @floatFromInt(h)))));
     for (first..last) |row| {
         const rf: f32 = @floatFromInt(row);
         const cy = std.math.clamp(@min(y1, rf + 1) - @max(y0, rf), 0, 1);
-        const a: u8 = @intFromFloat(@round(255 * cx * cy));
+        const a: u8 = @intFromFloat(@round(255 * cx * cy * opacity));
         const idx = (row * w + col) * 4 + 3;
         pixels[idx] = @max(pixels[idx], a);
     }
@@ -119,9 +155,19 @@ pub fn bar(p: *const Peaks, count: usize, i: usize, scale: Scale) Bar {
     const end = @min(@max(base_bins * (i + 1) / n, start + 1), base_bins);
     var l: f32 = 0;
     var r: f32 = 0;
+    var l2: f32 = 0;
+    var r2: f32 = 0;
     for (start..end) |b| {
         l = @max(l, p.left[b]);
         r = @max(r, p.right[b]);
+        l2 += p.left_ms[b];
+        r2 += p.right_ms[b];
     }
-    return .{ .left = level(l, scale), .right = level(r, scale) };
+    const cnt: f32 = @floatFromInt(end - start);
+    return .{
+        .left = level(l, scale),
+        .right = level(r, scale),
+        .left_rms = level(@sqrt(l2 / cnt), scale),
+        .right_rms = level(@sqrt(r2 / cnt), scale),
+    };
 }

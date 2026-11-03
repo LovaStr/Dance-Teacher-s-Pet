@@ -59,7 +59,7 @@ pub const Audio = struct {
         try p.play();
         self.track = t;
         self.player = p;
-        self.peaks = waveform.analyze(t.samples);
+        waveform.analyze(&self.peaks, t.samples);
         self.peaks_gen +%= 1;
     }
 
