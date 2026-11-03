@@ -2,9 +2,9 @@
     .name = .lmp3_v2,
     .version = "0.1.0",
     .fingerprint = 0xa80eb4966164b28f,
-    // zigui does not build on 0.17 (@cImport was removed); zoto's Windows driver
-    // needed patching for 0.16 (see third_party/zoto/PATCHES.md).
-    .minimum_zig_version = "0.16.0",
+    // zigui (current main) requires 0.17; zoto's Windows driver needed patching
+    // (see third_party/zoto/PATCHES.md).
+    .minimum_zig_version = "0.17.0",
 
     .dependencies = .{
         // Vendored + patched, Windows only.
@@ -13,8 +13,8 @@
         //   zig fetch --save git+https://github.com/ddalcu/zigui
         //   zig fetch --save git+https://github.com/mackron/dr_libs
         .zigui = .{
-            .url = "git+https://github.com/ddalcu/zigui#0ff39e9e5f06cc31dedb9aba8976416ffb4deec6",
-            .hash = "zigui-0.2.0-fjyMjYXhNgBOa5Mf1fOHC97CaMdPGgW1rKEo-K15zHU7",
+            .url = "git+https://github.com/ddalcu/zigui#ad0481f21faa6209d7f04a527996d345e3b7293e",
+            .hash = "zigui-0.2.0-fjyMjSyxbwCWx_KlUH0W8zwi2lJTFuc-VY9O8RXLYssn",
         },
         .dr_libs = .{
             .url = "git+https://github.com/mackron/dr_libs#dfe8377631000664666519fdb83da193fd8037f4",

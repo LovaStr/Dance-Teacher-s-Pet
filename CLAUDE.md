@@ -18,7 +18,7 @@ zigui (UI), dr_libs (decoding) and zoto (audio output) in one program.
 
 ## Tech stack
 
-- **Language / toolchain:** Zig **0.16.0**. Do not move to 0.17: zigui uses `@cImport`, which 0.17 removed.
+- **Language / toolchain:** Zig **0.17.0** (zigui now requires it; 0.17 has no `@cImport`, so `build.zig` builds zigui's SDL header module with translate-c).
 - **UI:** [ddalcu/zigui](https://github.com/ddalcu/zigui) (declarative views, SDL3 window layer from its `src/app.zig`, compiled from the dependency by path).
 - **Decoding:** [mackron/dr_libs](https://github.com/mackron/dr_libs) (`dr_mp3`, `dr_flac`, `dr_wav`), compiled once in `src/lm_decode.c`, a small C shim exposing `lm_open` / `lm_read_f32` / `lm_close`.
 - **Playback:** [braheezy/zoto](https://github.com/braheezy/zoto), **vendored and patched** in `third_party/zoto` (see `PATCHES.md`); Windows (WASAPI) only.
@@ -39,7 +39,7 @@ zigui (UI), dr_libs (decoding) and zoto (audio output) in one program.
 ## Things the agent must NOT do
 
 - Do **not** claim something builds or works unless it was actually compiled/run. State clearly what was only compiled and not run (this project is built by cross-compiling; playback is tested by the user).
-- Do **not** upgrade Zig to 0.17 or change `minimum_zig_version` without verifying zigui builds on it.
+- Do **not** change the Zig version or `minimum_zig_version` without verifying zigui builds on it.
 - Do **not** edit the files in `~/.cache`/fetched dependencies; changes to zoto go in `third_party/zoto` and must be recorded in `third_party/zoto/PATCHES.md`. Do not modify zigui or dr_libs sources.
 - Do **not** invent dependency hashes or fingerprints in `build.zig.zon`; use `zig fetch --save` output.
 - Do **not** mutate a playing zoto `Player`'s reader, or free a track/reader before its player is deinitialized.
