@@ -102,6 +102,8 @@ const AppState = struct {
     wave_line_w: zigui.State(f32),
     /// Index into `wave_scale_names` (and the `waveform.Scale` enum).
     wave_scale: zigui.State(i64),
+    /// Index into `wave_display_names` (and the `waveform.Display` enum).
+    wave_display: zigui.State(i64),
     /// Window width seen by the previous frame (0 before the first one).
     last_window_w: f32 = 0,
     /// Cached picture of the loudness graph (see `waveView`).
@@ -513,6 +515,7 @@ const WaveKey = struct {
     h: u32,
     bars: usize,
     scale: waveform.Scale,
+    display: waveform.Display,
     line_w: f32,
     rgb: [3]u8,
     gen: u32,
@@ -520,6 +523,9 @@ const WaveKey = struct {
 
 /// Labels of the "Scale" picker, in `waveform.Scale` order.
 const wave_scale_names = [_][]const u8{ "dB", "Linear" };
+
+/// Labels of the "Show" picker, in `waveform.Display` order.
+const wave_display_names = [_][]const u8{ "Peak", "RMS", "Peak + RMS" };
 
 /// Address and size of every pixel buffer ever handed to the renderer. zigui
 /// caches an image's texture by (address, size), so a new picture must never
@@ -563,7 +569,7 @@ const WaveImage = struct {
         };
         errdefer gpa.free(buf);
         try self.used.append(gpa, .{ .addr = @intFromPtr(buf.ptr), .w = key.w, .h = key.h });
-        waveform.render(buf, key.w, key.h, peaks, key.bars, key.scale, key.line_w, key.rgb);
+        waveform.render(buf, key.w, key.h, peaks, key.bars, key.scale, key.display, key.line_w, key.rgb);
         gpa.free(self.pixels);
         self.pixels = buf;
         self.key = key;
@@ -578,6 +584,10 @@ fn waveBars(st: *const AppState) usize {
 
 fn waveScale(st: *const AppState) waveform.Scale {
     return std.enums.fromInt(waveform.Scale, st.wave_scale.get()) orelse .db;
+}
+
+fn waveDisplay(st: *const AppState) waveform.Display {
+    return std.enums.fromInt(waveform.Display, st.wave_display.get()) orelse .peak;
 }
 
 fn rgbOf(c: zigui.Color) [3]u8 {
@@ -604,6 +614,7 @@ fn waveView(st: *AppState) zigui.View {
         .h = layout.wave_h * layout.wave_scale,
         .bars = waveBars(st),
         .scale = waveScale(st),
+        .display = waveDisplay(st),
         .line_w = st.wave_line_w.get() * layout.wave_scale,
         .rgb = rgbOf(colors().accent),
         .gen = a.peaks_gen,
@@ -671,6 +682,8 @@ fn settingsView(st: *AppState) zigui.View {
         zigui.Slider(st.wave_line_w.binding(), 0.1, 5.0).frameMaxWidth(),
         zigui.Text("Scale").font(.subheadline).foreground(c.secondary_label),
         zigui.Picker(st.wave_scale.binding(), &wave_scale_names),
+        zigui.Text("Show").font(.subheadline).foreground(c.secondary_label),
+        zigui.Picker(st.wave_display.binding(), &wave_display_names),
         zigui.HStack(.{
             zigui.Spacer(),
             zigui.Button("Close", zigui.actionCtx(AppState, st, onCloseSettings)),
@@ -817,6 +830,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         .wave_lines = zigui.State(f32).init(gpa, waveform.default_bars),
         .wave_line_w = zigui.State(f32).init(gpa, 1.5),
         .wave_scale = zigui.State(i64).init(gpa, @intFromEnum(waveform.Scale.linear)),
+        .wave_display = zigui.State(i64).init(gpa, @intFromEnum(waveform.Display.peak)),
     };
     defer {
         freeEntries(&st);
@@ -826,6 +840,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         st.wave_lines.deinit();
         st.wave_line_w.deinit();
         st.wave_scale.deinit();
+        st.wave_display.deinit();
         st.wave_img.deinit(gpa);
     }
     g_app = &st;
