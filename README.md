@@ -2,7 +2,7 @@
 
 A small, dependency-light audio player for Windows, written end to end in Zig, with a native-looking UI and no runtime to install.
 
-Download: [latest release](../../releases/latest) (`lmp3-windows-x64.zip`: `lmp3.exe` + `SDL3.dll`). Unzip and run `lmp3.exe`.
+Download: [latest release](../../releases/latest) (`lmp3-windows-x64.zip`: a single `lmp3.exe`, SDL3 is built in). Unzip and run `lmp3.exe`.
 
 ## What it does
 
@@ -18,7 +18,7 @@ It is also a working example of combining [zigui](https://github.com/ddalcu/zigu
 * To run: nothing beyond the release zip
 * To build from source:
   * **Zig 0.16.0** (do not use 0.17: zigui uses `@cImport`, which 0.17 removed)
-  * The SDL3 development package for MinGW (`SDL3-devel-<ver>-mingw.tar.gz` from the [SDL releases page](https://github.com/libsdl-org/SDL/releases)), extracted somewhere
+  * Nothing else: SDL3 is fetched as source and compiled statically into the exe
 
 No accounts, API keys or external services are needed.
 
@@ -29,7 +29,7 @@ git clone https://github.com/LovaStr/lmp3_v2
 cd lmp3_v2
 ```
 
-Dependencies (zigui, dr_libs) are pinned with hashes in `build.zig.zon`, so the first `zig build` fetches them.
+Dependencies (zigui, dr_libs, SDL3) are pinned with hashes in `build.zig.zon`, so the first `zig build` fetches them.
 
 ### Configuration
 
@@ -37,8 +37,6 @@ There is no `.env` file. Configuration is done with build options:
 
 | Option | Meaning |
 |---|---|
-| `-Dsdl3-prefix=<path>` | The `x86_64-w64-mingw32` folder of the extracted SDL3 package |
-| `-Dsdl3-dll=<path>` | Path to `SDL3.dll` (copied next to the exe) |
 | `-Doptimize=ReleaseFast` | Recommended for the UI |
 | `-Dconsole=true` | Keep a console window for logs and errors (off by default) |
 | `-Dtarget=x86_64-windows-gnu` | Cross-compile from another OS (what CI does) |
@@ -46,10 +44,10 @@ There is no `.env` file. Configuration is done with build options:
 ### Run
 
 ```sh
-zig build -Doptimize=ReleaseFast -Dsdl3-prefix=C:\sdk\SDL3\x86_64-w64-mingw32 -Dsdl3-dll=C:\sdk\SDL3\x86_64-w64-mingw32\bin\SDL3.dll
+zig build -Doptimize=ReleaseFast
 ```
 
-The exe and `SDL3.dll` end up in `zig-out\bin`. To build and start the player in one step:
+`lmp3.exe` ends up in `zig-out\bin`; it needs no other files. To build and start the player in one step:
 
 ```sh
 zig build run -- "C:\Users\you\Music"
@@ -96,7 +94,7 @@ lmp3_v2/
 | Component | Choice | Reason |
 |---|---|---|
 | Language | Zig 0.16.0 | One toolchain for the app, the C shim and cross-compilation |
-| UI | [ddalcu/zigui](https://github.com/ddalcu/zigui) on SDL3 | Declarative views and a native-looking window without a runtime |
+| UI | [ddalcu/zigui](https://github.com/ddalcu/zigui) on [SDL3](https://github.com/libsdl-org/SDL), linked statically | Declarative views and a native-looking window without a runtime or extra DLL |
 | Decoding | [mackron/dr_libs](https://github.com/mackron/dr_libs) (`dr_mp3`, `dr_flac`, `dr_wav`) | Small single-header decoders for all three formats |
 | Playback | [braheezy/zoto](https://github.com/braheezy/zoto), vendored and patched | Minimal audio output; vendored so it can be trimmed to the WASAPI driver |
 | Build / release | `zig build` + GitHub Actions | CI cross-compiles on Linux and publishes `lmp3-windows-x64.zip` on every merge to `main` |

@@ -1,20 +1,10 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const sdl3_sources = @import("third_party/sdl3_sources.zig");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-
-    const sdl3_prefix = b.option(
-        []const u8,
-        "sdl3-prefix",
-        "SDL3 development prefix containing include/ and lib/ (needed on Windows; e.g. SDL3-devel\\x86_64-w64-mingw32)",
-    );
-    const sdl3_dll = b.option(
-        []const u8,
-        "sdl3-dll",
-        "Path to SDL3.dll to copy next to the executable (Windows)",
-    );
 
     const console = b.option(bool, "console", "Keep a console window on Windows (shows logs/errors)") orelse false;
 
@@ -35,7 +25,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .imports = &.{.{ .name = "zigui", .module = zigui_mod }},
     });
-    linkSdl3(b, app_mod, target.result.os.tag, sdl3_prefix);
+    linkSdl3(b, app_mod, target, optimize);
 
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -58,10 +48,6 @@ pub fn build(b: *std.Build) void {
     // Windows: a GUI-subsystem exe opens only the player window, no console.
     if (target.result.os.tag == .windows and !console) exe.subsystem = .windows;
     b.installArtifact(exe);
-
-    if (sdl3_dll) |dll| {
-        b.getInstallStep().dependOn(&b.addInstallBinFile(.{ .cwd_relative = dll }, "SDL3.dll").step);
-    }
 
     const run = b.addRunArtifact(exe);
     run.step.dependOn(b.getInstallStep());
@@ -123,17 +109,16 @@ fn addDecoderC(b: *std.Build, m: *std.Build.Module, drlibs_dep: *std.Build.Depen
     });
 }
 
-fn linkSdl3(b: *std.Build, m: *std.Build.Module, os: std.Target.Os.Tag, prefix: ?[]const u8) void {
-    if (prefix) |p| {
-        m.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ p, "include" }) });
-        m.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ p, "lib" }) });
-        if (os == .windows) {
-            // The MinGW SDL3 package ships an import library named libSDL3.dll.a,
-            // which -lSDL3 does not find; link it directly.
-            m.addObjectFile(.{ .cwd_relative = b.pathJoin(&.{ p, "lib", "libSDL3.dll.a" }) });
-            return;
-        }
-    } else if (builtin.os.tag == .macos) {
+fn linkSdl3(b: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
+    if (target.result.os.tag == .windows) {
+        const sdl_dep = b.dependency("sdl3", .{});
+        const lib = buildSdl3(b, sdl_dep, target, optimize);
+        m.addIncludePath(sdl_dep.path("include"));
+        m.addCMacro("SDL_STATIC_LIB", "1");
+        m.linkLibrary(lib);
+        return;
+    }
+    if (builtin.os.tag == .macos) {
         // Same Homebrew layout zigui's own build.zig assumes.
         const brew = if (builtin.cpu.arch == .aarch64) "/opt/homebrew/opt/sdl3" else "/usr/local/opt/sdl3";
         m.addIncludePath(.{ .cwd_relative = brew ++ "/include" });
@@ -141,4 +126,39 @@ fn linkSdl3(b: *std.Build, m: *std.Build.Module, os: std.Target.Os.Tag, prefix: 
         m.addRPath(.{ .cwd_relative = brew ++ "/lib" });
     }
     m.linkSystemLibrary("SDL3", .{});
+}
+
+/// SDL3 compiled from the `sdl3` dependency as a static library (Windows only),
+/// so the exe needs no SDL3.dll. The source list is in third_party/sdl3_sources.zig.
+fn buildSdl3(
+    b: *std.Build,
+    sdl_dep: *std.Build.Dependency,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Step.Compile {
+    const mod = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    // First, so our winsdkver.h shadows MinGW's (see the header for why).
+    mod.addIncludePath(b.path("third_party/sdl3_shim"));
+    mod.addIncludePath(sdl_dep.path("include"));
+    mod.addIncludePath(sdl_dep.path("include/build_config"));
+    mod.addIncludePath(sdl_dep.path("src"));
+    mod.addIncludePath(sdl_dep.path("src/video/khronos"));
+    mod.addCSourceFiles(.{
+        .root = sdl_dep.path("."),
+        .files = &sdl3_sources.files,
+        .flags = &.{ "-DSDL_STATIC_LIB=1", "-fno-sanitize=undefined" },
+    });
+    mod.addCSourceFile(.{
+        .file = b.path("third_party/sdl3_shim/stub_gameinput.c"),
+        .flags = &.{ "-DSDL_STATIC_LIB=1", "-fno-sanitize=undefined" },
+    });
+    for ([_][]const u8{
+        "user32",   "gdi32",    "winmm",    "imm32", "ole32",    "oleaut32",
+        "version",  "uuid",     "advapi32", "setupapi", "shell32", "cfgmgr32",
+    }) |name| mod.linkSystemLibrary(name, .{});
+    return b.addLibrary(.{ .name = "SDL3", .linkage = .static, .root_module = mod });
 }
