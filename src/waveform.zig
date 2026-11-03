@@ -26,11 +26,22 @@ pub const Bar = struct {
     right: f32,
 };
 
+/// How a peak is mapped to a bar length.
+pub const Scale = enum { db, linear };
+
 /// Map a linear peak (0..1) to 0..1 on a dB scale.
 pub fn levelFromPeak(peak: f32) f32 {
     if (peak <= 0) return 0;
     const db = 20 * @log10(peak);
     return std.math.clamp((db - floor_db) / -floor_db, 0, 1);
+}
+
+/// Map a linear peak (0..1) to 0..1 on `scale`.
+pub fn level(peak: f32, scale: Scale) f32 {
+    return switch (scale) {
+        .db => levelFromPeak(peak),
+        .linear => std.math.clamp(peak, 0, 1),
+    };
 }
 
 /// `samples` is interleaved L/R. Each bin covers an equal share of the frames
@@ -58,7 +69,7 @@ pub fn analyze(samples: []const f32) Peaks {
 /// vertical lines of width `line_w` pixels, the right channel growing up and
 /// the left channel down from the horizontal centre line. Edges are
 /// anti-aliased through the alpha channel; the colour is `rgb` everywhere.
-pub fn render(pixels: []u8, w: u32, h: u32, peaks: *const Peaks, bars: usize, line_w: f32, rgb: [3]u8) void {
+pub fn render(pixels: []u8, w: u32, h: u32, peaks: *const Peaks, bars: usize, scale: Scale, line_w: f32, rgb: [3]u8) void {
     std.debug.assert(pixels.len == @as(usize, w) * h * 4);
     var k: usize = 0;
     while (k < pixels.len) : (k += 4) {
@@ -71,7 +82,7 @@ pub fn render(pixels: []u8, w: u32, h: u32, peaks: *const Peaks, bars: usize, li
     const wf: f32 = @floatFromInt(w);
     const mid: f32 = @as(f32, @floatFromInt(h)) / 2;
     for (0..n) |i| {
-        const b = bar(peaks, n, i);
+        const b = bar(peaks, n, i, scale);
         const xc = (@as(f32, @floatFromInt(i)) + 0.5) * wf / @as(f32, @floatFromInt(n));
         const x0 = xc - line_w / 2;
         const x1 = xc + line_w / 2;
@@ -102,7 +113,7 @@ fn fillSpan(pixels: []u8, w: u32, h: u32, col: usize, y0: f32, y1: f32, cx: f32)
 }
 
 /// Bar `i` of `count` (clamped to `min_bars..max_bars`).
-pub fn bar(p: *const Peaks, count: usize, i: usize) Bar {
+pub fn bar(p: *const Peaks, count: usize, i: usize, scale: Scale) Bar {
     const n = std.math.clamp(count, min_bars, max_bars);
     const start = base_bins * i / n;
     const end = @min(@max(base_bins * (i + 1) / n, start + 1), base_bins);
@@ -112,5 +123,5 @@ pub fn bar(p: *const Peaks, count: usize, i: usize) Bar {
         l = @max(l, p.left[b]);
         r = @max(r, p.right[b]);
     }
-    return .{ .left = levelFromPeak(l), .right = levelFromPeak(r) };
+    return .{ .left = level(l, scale), .right = level(r, scale) };
 }
