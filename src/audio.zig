@@ -5,11 +5,16 @@ const std = @import("std");
 const builtin = @import("builtin");
 const zoto = @import("zoto");
 const decoder = @import("decoder.zig");
+const waveform = @import("waveform.zig");
 
 pub const Audio = struct {
     gpa: std.mem.Allocator,
     ctx: *zoto.Context,
     track: ?*decoder.Track = null,
+    /// Loudness graph of `track`, computed once when it is loaded.
+    peaks: waveform.Peaks = .{},
+    /// Bumped whenever `peaks` is replaced, so a cached picture of it can tell.
+    peaks_gen: u32 = 0,
     player: ?*zoto.Player = null,
     volume: f64 = 0.8,
 
@@ -54,6 +59,8 @@ pub const Audio = struct {
         try p.play();
         self.track = t;
         self.player = p;
+        self.peaks = waveform.analyze(t.samples);
+        self.peaks_gen +%= 1;
     }
 
     pub fn pause(self: *Audio) void {
