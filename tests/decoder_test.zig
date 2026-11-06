@@ -1,4 +1,4 @@
-﻿//! Decoder tests. WAV fixtures are generated in a temporary directory by the
+//! Decoder tests. WAV fixtures are generated in a temporary directory by the
 //! tests themselves, so no binary files are stored in the repository.
 
 const std = @import("std");
@@ -6,6 +6,7 @@ const builtin = @import("builtin");
 const decoder = @import("decoder");
 
 const gpa = std.testing.allocator;
+const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 const expectApproxEqAbs = std.testing.expectApproxEqAbs;
 
@@ -380,4 +381,26 @@ test "describeError gives a sentence for each decoder error and falls back to th
     try std.testing.expectEqualStrings("More than 8 channels are not supported", decoder.describeError(error.UnsupportedChannelCount));
     try std.testing.expectEqualStrings("Could not open file (missing, locked or damaged)", decoder.describeError(error.OpenFailed));
     try std.testing.expectEqualStrings("SomethingElse", decoder.describeError(error.SomethingElse));
+}
+
+test "audibleBounds trims by mean level over the window" {
+    // 10 silent frames, 6 loud ones (left 0.5), 10 silent frames; window 4 frames.
+    var s: [2 * 26]f32 = @splat(0);
+    for (10..16) |f| s[f * 2] = 0.5;
+    // -20 dB: a window needs a mean square of 0.01 per channel sample.
+    const b = decoder.audibleBounds(&s, -20, 4);
+    try expectEqual(@as(usize, 7), b.start); // first window that reaches into the music
+    try expectEqual(@as(usize, 19), b.end); // last window that still holds music
+    // A stricter threshold needs more music in the window, so less is trimmed.
+    const strict = decoder.audibleBounds(&s, -12, 4);
+    try expect(strict.start > b.start and strict.end < b.end);
+}
+
+test "audibleBounds keeps a quiet or empty track whole" {
+    const quiet = [_]f32{ 0, 0, 0.0001, 0, 0, 0 };
+    const b = decoder.audibleBounds(&quiet, -60, 2);
+    try expectEqual(@as(usize, 0), b.start);
+    try expectEqual(@as(usize, 3), b.end);
+    const e = decoder.audibleBounds(&.{}, -60, 2);
+    try expectEqual(@as(usize, 0), e.end);
 }

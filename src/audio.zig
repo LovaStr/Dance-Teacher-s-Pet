@@ -17,6 +17,15 @@ pub const Audio = struct {
     peaks_gen: u32 = 0,
     player: ?*zoto.Player = null,
     volume: f64 = 0.8,
+    /// Skip the silence at the start and end of a track (applied by `load`,
+    /// `seekSeconds` and `setTrimSilence`, never to a reader a player is using).
+    trim_silence: bool = true,
+    /// Mean level (dBFS over one second) below which audio counts as silence.
+    /// Read when a track is loaded or skipping is switched on.
+    silence_db: f32 = -34,
+    /// Frames of `track` between its leading and trailing silence (valid while
+    /// `trim_silence` is on).
+    bounds: decoder.Bounds = .{ .start = 0, .end = 0 },
 
     pub fn init(gpa: std.mem.Allocator) !Audio {
         // Only one context may exist per process.
@@ -53,6 +62,8 @@ pub const Audio = struct {
         self.unload();
         const t = try decoder.load(self.gpa, path);
         errdefer t.destroy(self.gpa);
+        if (self.trim_silence) self.bounds = decoder.audibleBounds(t.samples, self.silence_db, decoder.silence_window);
+        self.limitReader(t, 0);
         const p = try self.ctx.newPlayer(&t.reader);
         errdefer p.deinit();
         p.setVolume(self.volume);
@@ -109,7 +120,7 @@ pub const Audio = struct {
         }
         const total: f64 = @floatFromInt(t.frameCount());
         const frame: usize = @intFromFloat(std.math.clamp(secs * @as(f64, decoder.sample_rate), 0.0, total));
-        t.reader.seek = frame * decoder.bytes_per_frame;
+        self.limitReader(t, frame);
 
         const p = try self.ctx.newPlayer(&t.reader);
         errdefer p.deinit();
@@ -120,6 +131,28 @@ pub const Audio = struct {
         // so the new position is heard immediately. (The zoto Windows driver in
         // third_party/zoto provides `flush`.)
         if (builtin.os.tag == .windows) self.ctx.flush();
+    }
+
+    /// Position `t`'s reader at `frame` and, when silence is skipped, confine it
+    /// to the audible part. Only call while no player uses the reader.
+    fn limitReader(self: *const Audio, t: *decoder.Track, frame: usize) void {
+        const all = t.frameCount();
+        const lo = if (self.trim_silence) self.bounds.start else 0;
+        const hi = if (self.trim_silence) self.bounds.end else all;
+        t.reader.end = hi * decoder.bytes_per_frame;
+        t.reader.seek = std.math.clamp(frame, lo, hi) * decoder.bytes_per_frame;
+    }
+
+    /// Turn silence skipping on or off. The loaded track follows at once, via a
+    /// seek to where it is now (a new player), so a track playing in a silent
+    /// tail ends immediately when it is switched on.
+    pub fn setTrimSilence(self: *Audio, on: bool, keep_playing: bool) !void {
+        if (self.trim_silence == on) return;
+        self.trim_silence = on;
+        if (self.track) |t| if (on) {
+            self.bounds = decoder.audibleBounds(t.samples, self.silence_db, decoder.silence_window);
+        };
+        if (self.track != null) try self.seekSeconds(self.positionSeconds(), keep_playing);
     }
 
     pub fn durationSeconds(self: *Audio) f64 {

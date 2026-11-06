@@ -90,6 +90,8 @@ const AppState = struct {
     paused: bool = false,
     /// true: start the next track when one ends; false: stop after the current track.
     auto_advance: bool = false,
+    /// true: the silence at the start and end of a track is skipped.
+    skip_silence: bool = true,
     /// true: a track that has finished playing is removed from the play list.
     remove_played: bool = true,
     /// Track that play starts from when nothing is loaded (see `stopAndCueNext`).
@@ -104,6 +106,8 @@ const AppState = struct {
     wave_scale: zigui.State(i64),
     /// Index into `wave_display_names` (and the `waveform.Display` enum).
     wave_display: zigui.State(i64),
+    /// Mean level (dBFS over one second) under which audio counts as silence.
+    silence_db: zigui.State(f32),
     /// Window width seen by the previous frame (0 before the first one).
     last_window_w: f32 = 0,
     /// Cached picture of the loudness graph (see `waveView`).
@@ -234,6 +238,7 @@ fn playIndex(st: *AppState, index: usize) void {
         return;
     };
     const e = st.entries.items[index];
+    a.trim_silence = st.skip_silence;
     a.load(e.path) catch |err| {
         a.unload();
         st.current = null;
@@ -305,6 +310,17 @@ fn onToggleRemovePlayed(st: *AppState) void {
 fn onToggleAutoAdvance(st: *AppState) void {
     st.auto_advance = !st.auto_advance;
     st.setStatus("{s}", .{if (st.auto_advance) "Continuous playback" else "Stop after current track"});
+}
+
+fn onToggleSkipSilence(st: *AppState) void {
+    st.skip_silence = !st.skip_silence;
+    st.setStatus("{s}", .{if (st.skip_silence) "Silence at the start and end is skipped" else "Silence at the start and end is played"});
+    if (st.current == null) return;
+    const a = if (st.audio) |*au| au else return;
+    a.setTrimSilence(st.skip_silence, !st.paused) catch |err| {
+        stopAudio(st);
+        st.setStatus("Seek failed: {s}", .{describeError(err)});
+    };
 }
 
 fn onOpenSettings(st: *AppState) void {
@@ -433,6 +449,7 @@ fn frameHook() void {
 
     const a = if (st.audio) |*au| au else return;
     a.setVolume(st.volume.get());
+    a.silence_db = st.silence_db.get();
 
     // A track that was playing and has stopped by itself has ended: advance
     // (after a short grace period so the device can play out its buffer). With
@@ -684,6 +701,8 @@ fn settingsView(st: *AppState) zigui.View {
         zigui.Picker(st.wave_scale.binding(), &wave_scale_names),
         zigui.Text("Show").font(.subheadline).foreground(c.secondary_label),
         zigui.Picker(st.wave_display.binding(), &wave_display_names),
+        zigui.Text(zigui.components.fmt("Silence below: {d:.0} dB (1 s average)", .{st.silence_db.get()})).font(.subheadline).foreground(c.secondary_label),
+        zigui.Slider(st.silence_db.binding(), -80, -20).frameMaxWidth(),
         zigui.HStack(.{
             zigui.Spacer(),
             zigui.Button("Close", zigui.actionCtx(AppState, st, onCloseSettings)),
@@ -696,6 +715,7 @@ fn controls(st: *AppState) zigui.View {
     return zigui.HStack(.{
         zigui.IconButton(if (playing) .pause else .play, layout.button_icon, zigui.actionCtx(AppState, st, onPlayPause)),
         autoAdvanceToggle(st),
+        skipSilenceToggle(st),
         removePlayedToggle(st),
         zigui.Spacer(),
         zigui.Icon(.volume, layout.volume_icon, null),
@@ -708,6 +728,13 @@ fn controls(st: *AppState) zigui.View {
 fn autoAdvanceToggle(st: *AppState) zigui.View {
     const btn = zigui.IconButton(.arrow_right, layout.button_icon, zigui.actionCtx(AppState, st, onToggleAutoAdvance));
     return if (st.auto_advance) btn else btn.opacity(layout.dimmed);
+}
+
+/// Waveform button: full strength while the silence at the start and end of a
+/// track is skipped, dimmed grey while it is played.
+fn skipSilenceToggle(st: *AppState) zigui.View {
+    const btn = zigui.IconButton(.audio_waveform, layout.button_icon, zigui.actionCtx(AppState, st, onToggleSkipSilence));
+    return if (st.skip_silence) btn else btn.opacity(layout.dimmed);
 }
 
 /// Trash button: dimmed grey while played tracks stay in the list, full strength
@@ -831,6 +858,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         .wave_line_w = zigui.State(f32).init(gpa, 1.5),
         .wave_scale = zigui.State(i64).init(gpa, @intFromEnum(waveform.Scale.linear)),
         .wave_display = zigui.State(i64).init(gpa, @intFromEnum(waveform.Display.peak)),
+        .silence_db = zigui.State(f32).init(gpa, -34),
     };
     defer {
         freeEntries(&st);
@@ -841,6 +869,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         st.wave_line_w.deinit();
         st.wave_scale.deinit();
         st.wave_display.deinit();
+        st.silence_db.deinit();
         st.wave_img.deinit(gpa);
     }
     g_app = &st;
