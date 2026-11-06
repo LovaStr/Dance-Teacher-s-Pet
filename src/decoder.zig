@@ -122,6 +122,28 @@ pub fn audibleBounds(samples: []const f32, threshold_db: f32, window: usize) Bou
     return .{ .start = first, .end = @max(last, first) };
 }
 
+/// The `window` consecutive frames of `samples` (interleaved stereo) with the
+/// highest mean level (mean square, both channels). A track no longer than
+/// `window` is returned whole. On a tie the earliest window wins.
+pub fn loudestWindow(samples: []const f32, window: usize) Bounds {
+    const frames = samples.len / channels;
+    if (window == 0 or frames <= window) return .{ .start = 0, .end = frames };
+
+    var sum: f64 = 0;
+    for (0..window) |i| sum += energy(samples, i);
+    var best = sum;
+    var best_start: usize = 0;
+    var first: usize = 1;
+    while (first + window <= frames) : (first += 1) {
+        sum += energy(samples, first + window - 1) - energy(samples, first - 1);
+        if (sum > best) {
+            best = sum;
+            best_start = first;
+        }
+    }
+    return .{ .start = best_start, .end = best_start + window };
+}
+
 /// Sum of the squares of one frame's two samples.
 fn energy(samples: []const f32, frame: usize) f64 {
     const l: f64 = samples[frame * channels];
