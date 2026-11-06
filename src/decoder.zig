@@ -81,6 +81,53 @@ pub const Track = struct {
     }
 };
 
+/// Audio is silent while its average level over `silence_window` (one second)
+/// stays below a threshold in dBFS (mean square of both channels).
+pub const silence_window: usize = sample_rate;
+
+/// Range of frames `start..end` between the leading and trailing silence.
+pub const Bounds = struct { start: usize, end: usize };
+
+/// Frames of `samples` (interleaved stereo) without the silence at the start and
+/// end. The start is the first position whose following `window` frames have a
+/// mean level of at least `threshold_db`; the end is the last position whose
+/// preceding `window` frames do. Audio is never cut, so up to `window` frames of
+/// silence can remain next to the music. A track that is quiet all the way
+/// through keeps its full range.
+pub fn audibleBounds(samples: []const f32, threshold_db: f32, window: usize) Bounds {
+    const frames = samples.len / channels;
+    const whole: Bounds = .{ .start = 0, .end = frames };
+    if (frames == 0) return whole;
+    const w = std.math.clamp(window, 1, frames);
+    // Sum of squares (both channels) that a window must reach to count as audible.
+    const limit = std.math.pow(f64, 10.0, @as(f64, threshold_db) / 10.0) * 2.0 * @as(f64, @floatFromInt(w));
+
+    var sum: f64 = 0;
+    for (0..w) |i| sum += energy(samples, i);
+    var first: usize = 0;
+    while (sum < limit) {
+        if (first + w >= frames) return whole;
+        sum += energy(samples, first + w) - energy(samples, first);
+        first += 1;
+    }
+
+    sum = 0;
+    for (frames - w..frames) |i| sum += energy(samples, i);
+    var last: usize = frames;
+    while (sum < limit) {
+        if (last <= w) return whole;
+        sum += energy(samples, last - w - 1) - energy(samples, last - 1);
+        last -= 1;
+    }
+    return .{ .start = first, .end = @max(last, first) };
+}
+
+/// Sum of the squares of one frame's two samples.
+fn energy(samples: []const f32, frame: usize) f64 {
+    const l: f64 = samples[frame * channels];
+    const r: f64 = samples[frame * channels + 1];
+    return l * l + r * r;
+}
 /// True for the file extensions the decoder understands.
 pub fn isSupported(path: []const u8) bool {
     const dot = std.mem.lastIndexOfScalar(u8, path, '.') orelse return false;
