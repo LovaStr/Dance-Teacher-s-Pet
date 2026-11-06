@@ -92,6 +92,13 @@ const AppState = struct {
     auto_advance: bool = false,
     /// true: the silence at the start and end of a track is skipped.
     skip_silence: bool = true,
+    /// true: only the loudest 90 s of a track play, faded in and out.
+    dancer: bool = true,
+    /// Fade length (seconds) of the dancer mode; a change is applied once it
+    /// has stopped moving (`fade_seen` / `fade_changed_at` track that).
+    fade_secs: zigui.State(f32),
+    fade_seen: f32 = 0,
+    fade_changed_at: u64 = 0,
     /// true: a track that has finished playing is removed from the play list.
     remove_played: bool = true,
     /// Track that play starts from when nothing is loaded (see `stopAndCueNext`).
@@ -239,6 +246,8 @@ fn playIndex(st: *AppState, index: usize) void {
     };
     const e = st.entries.items[index];
     a.trim_silence = st.skip_silence;
+    a.dancer = st.dancer;
+    a.fade_secs = st.fade_secs.get();
     a.load(e.path) catch |err| {
         a.unload();
         st.current = null;
@@ -318,6 +327,17 @@ fn onToggleSkipSilence(st: *AppState) void {
     if (st.current == null) return;
     const a = if (st.audio) |*au| au else return;
     a.setTrimSilence(st.skip_silence, !st.paused) catch |err| {
+        stopAudio(st);
+        st.setStatus("Seek failed: {s}", .{describeError(err)});
+    };
+}
+
+fn onToggleDancer(st: *AppState) void {
+    st.dancer = !st.dancer;
+    st.setStatus("{s}", .{if (st.dancer) "Playing the loudest 90 s of each track, with fades" else "Playing whole tracks"});
+    if (st.current == null) return;
+    const a = if (st.audio) |*au| au else return;
+    a.setDancer(st.dancer, !st.paused) catch |err| {
         stopAudio(st);
         st.setStatus("Seek failed: {s}", .{describeError(err)});
     };
@@ -450,6 +470,23 @@ fn frameHook() void {
     const a = if (st.audio) |*au| au else return;
     a.setVolume(st.volume.get());
     a.silence_db = st.silence_db.get();
+
+    // A new fade length restarts the player at the current position, so while
+    // music plays wait until the slider has been still for a moment.
+    const want_fade = st.fade_secs.get();
+    if (want_fade != a.fade_secs) {
+        const now = sdl.SDL_GetTicks();
+        if (want_fade != st.fade_seen) {
+            st.fade_seen = want_fade;
+            st.fade_changed_at = now;
+        }
+        if (!st.isPlaying() or now -% st.fade_changed_at >= 250) {
+            a.setFadeSeconds(want_fade, !st.paused) catch |err| {
+                stopAudio(st);
+                st.setStatus("Seek failed: {s}", .{describeError(err)});
+            };
+        }
+    }
 
     // A track that was playing and has stopped by itself has ended: advance
     // (after a short grace period so the device can play out its buffer). With
@@ -639,17 +676,34 @@ fn waveView(st: *AppState) zigui.View {
     const same = if (st.wave_img.key) |k| std.meta.eql(k, key) else false;
     if (!same) st.wave_img.rebuild(st.gpa, key, &a.peaks) catch return empty;
 
+    // In dancer mode the parts outside the played window are dimmed.
+    var lo: f32 = 0;
+    var hi: f32 = 1;
+    if (a.dancer) if (a.track) |t| {
+        const frames: f32 = @floatFromInt(@max(t.frameCount(), 1));
+        lo = @as(f32, @floatFromInt(a.bounds.start)) / frames;
+        hi = @as(f32, @floatFromInt(a.bounds.end)) / frames;
+    };
+
     const ctx = zigui.view.buildAlloc().create(WavePaint) catch return empty;
-    ctx.* = .{ .image = .{ .width = key.w, .height = key.h, .pixels = st.wave_img.pixels } };
+    ctx.* = .{
+        .image = .{ .width = key.w, .height = key.h, .pixels = st.wave_img.pixels },
+        .lo = lo,
+        .hi = hi,
+        .dim = colors().scrim,
+    };
     return zigui.Drawing(WavePaint, ctx, paintWave).frameMaxWidth().frameHeight(layout.wave_h);
 }
 
-const WavePaint = struct { image: zigui.canvas.Image };
+const WavePaint = struct { image: zigui.canvas.Image, lo: f32, hi: f32, dim: zigui.Color };
 
 /// Stretch the cached picture over exactly the area the view got, which is the
-/// same width as the seek slider below it (both fill the column).
+/// same width as the seek slider below it (both fill the column), then dim what
+/// lies outside the played window `lo..hi` (fractions of the track).
 fn paintWave(ctx: *const WavePaint, pen: *zigui.Pen, r: zigui.Rect) std.mem.Allocator.Error!void {
     try pen.canvas.drawImage(r, ctx.image);
+    if (ctx.lo > 0) try pen.canvas.fillRect(.{ .x = r.x, .y = r.y, .width = r.width * ctx.lo, .height = r.height }, ctx.dim);
+    if (ctx.hi < 1) try pen.canvas.fillRect(.{ .x = r.x + r.width * ctx.hi, .y = r.y, .width = r.width * (1 - ctx.hi), .height = r.height }, ctx.dim);
 }
 
 fn nowPlaying(st: *AppState) zigui.View {
@@ -703,6 +757,8 @@ fn settingsView(st: *AppState) zigui.View {
         zigui.Picker(st.wave_display.binding(), &wave_display_names),
         zigui.Text(zigui.components.fmt("Silence below: {d:.0} dB (1 s average)", .{st.silence_db.get()})).font(.subheadline).foreground(c.secondary_label),
         zigui.Slider(st.silence_db.binding(), -80, -20).frameMaxWidth(),
+        zigui.Text(zigui.components.fmt("Fade in / out: {d:.1} s", .{st.fade_secs.get()})).font(.subheadline).foreground(c.secondary_label),
+        zigui.Slider(st.fade_secs.binding(), 0, 5).frameMaxWidth(),
         zigui.HStack(.{
             zigui.Spacer(),
             zigui.Button("Close", zigui.actionCtx(AppState, st, onCloseSettings)),
@@ -716,6 +772,7 @@ fn controls(st: *AppState) zigui.View {
         zigui.IconButton(if (playing) .pause else .play, layout.button_icon, zigui.actionCtx(AppState, st, onPlayPause)),
         autoAdvanceToggle(st),
         skipSilenceToggle(st),
+        dancerToggle(st),
         removePlayedToggle(st),
         zigui.Spacer(),
         zigui.Icon(.volume, layout.volume_icon, null),
@@ -735,6 +792,13 @@ fn autoAdvanceToggle(st: *AppState) zigui.View {
 fn skipSilenceToggle(st: *AppState) zigui.View {
     const btn = zigui.IconButton(.audio_waveform, layout.button_icon, zigui.actionCtx(AppState, st, onToggleSkipSilence));
     return if (st.skip_silence) btn else btn.opacity(layout.dimmed);
+}
+
+/// Dancer button: full strength while only the loudest 90 s of a track play (with
+/// fades), dimmed grey while whole tracks play.
+fn dancerToggle(st: *AppState) zigui.View {
+    const btn = zigui.IconButton(.person_standing, layout.button_icon, zigui.actionCtx(AppState, st, onToggleDancer));
+    return if (st.dancer) btn else btn.opacity(layout.dimmed);
 }
 
 /// Trash button: dimmed grey while played tracks stay in the list, full strength
@@ -859,6 +923,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
         .wave_scale = zigui.State(i64).init(gpa, @intFromEnum(waveform.Scale.linear)),
         .wave_display = zigui.State(i64).init(gpa, @intFromEnum(waveform.Display.peak)),
         .silence_db = zigui.State(f32).init(gpa, -34),
+        .fade_secs = zigui.State(f32).init(gpa, 2),
+        .fade_seen = 2,
     };
     defer {
         freeEntries(&st);
@@ -870,6 +936,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         st.wave_scale.deinit();
         st.wave_display.deinit();
         st.silence_db.deinit();
+        st.fade_secs.deinit();
         st.wave_img.deinit(gpa);
     }
     g_app = &st;

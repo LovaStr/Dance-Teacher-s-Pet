@@ -404,3 +404,20 @@ test "audibleBounds keeps a quiet or empty track whole" {
     const e = decoder.audibleBounds(&.{}, -60, 2);
     try expectEqual(@as(usize, 0), e.end);
 }
+test "loudestWindow picks the window with the highest mean level" {
+    // 20 frames; a quiet burst at 2..4 and a louder one at 12..16.
+    var s: [2 * 20]f32 = @splat(0);
+    for (2..4) |f| s[f * 2] = 0.2;
+    for (12..16) |f| s[f * 2] = 0.8;
+    const b = decoder.loudestWindow(&s, 5);
+    try expectEqual(@as(usize, 5), b.end - b.start);
+    try expect(b.start >= 11 and b.start <= 12); // holds all four loud frames
+    try expect(b.start + 5 >= 16);
+}
+
+test "loudestWindow returns a short track whole" {
+    const s = [_]f32{ 0.1, 0.1, 0.2, 0.2, 0.3, 0.3 };
+    const b = decoder.loudestWindow(&s, 10);
+    try expectEqual(@as(usize, 0), b.start);
+    try expectEqual(@as(usize, 3), b.end);
+}

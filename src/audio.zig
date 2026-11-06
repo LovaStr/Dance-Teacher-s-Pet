@@ -26,6 +26,25 @@ pub const Audio = struct {
     /// Frames of `track` between its leading and trailing silence (valid while
     /// `trim_silence` is on).
     bounds: decoder.Bounds = .{ .start = 0, .end = 0 },
+    /// Play only the loudest `window_secs` of a track, faded in and out over
+    /// `fade_secs` at the two ends of that part (a track's own start and end are
+    /// not touched). While on, it takes the place of silence skipping.
+    dancer: bool = true,
+    window_secs: u32 = 90,
+    fade_secs: f32 = 2,
+    /// The samples under the fade slopes, as they were before the fade was applied
+    /// to the track's buffer (see `applyFade`).
+    fade_saved: SavedFade = .{},
+    /// `dancer`, `fade_secs` or `trim_silence` changed: `bounds` and the faded
+    /// samples are rebuilt by the next `seekSeconds`, while no player is attached.
+    dirty: bool = false,
+
+    const SavedFade = struct {
+        head_start: usize = 0,
+        head: []f32 = &.{},
+        tail_start: usize = 0,
+        tail: []f32 = &.{},
+    };
 
     pub fn init(gpa: std.mem.Allocator) !Audio {
         // Only one context may exist per process.
@@ -51,10 +70,72 @@ pub const Audio = struct {
             p.deinit(); // must precede freeing the reader it points at
             self.player = null;
         }
+        self.freeFade();
         if (self.track) |t| {
             t.destroy(self.gpa);
             self.track = null;
         }
+    }
+
+    fn freeFade(self: *Audio) void {
+        self.gpa.free(self.fade_saved.head);
+        self.gpa.free(self.fade_saved.tail);
+        self.fade_saved = .{};
+    }
+
+    /// Put back the samples `applyFade` changed.
+    fn restoreFade(self: *Audio, t: *decoder.Track) void {
+        const s = &self.fade_saved;
+        @memcpy(t.samples[s.head_start * decoder.channels ..][0..s.head.len], s.head);
+        @memcpy(t.samples[s.tail_start * decoder.channels ..][0..s.tail.len], s.tail);
+        self.freeFade();
+    }
+
+    /// Recompute `bounds` for the current settings (the fade must be restored).
+    fn updateBounds(self: *Audio, t: *decoder.Track) void {
+        self.bounds = if (self.dancer)
+            decoder.loudestWindow(t.samples, @as(usize, self.window_secs) * decoder.sample_rate)
+        else if (self.trim_silence)
+            decoder.audibleBounds(t.samples, self.silence_db, decoder.silence_window)
+        else
+            .{ .start = 0, .end = t.frameCount() };
+    }
+
+    /// Fade the first and last `fade_secs` of `bounds` in the track's buffer, after
+    /// saving the samples it overwrites. Only call while no player uses the
+    /// buffer. Running out of memory just leaves the part unfaded.
+    fn applyFade(self: *Audio, t: *decoder.Track) void {
+        if (!self.dancer) return;
+        const len = self.bounds.end - self.bounds.start;
+        const want: usize = @intFromFloat(@max(self.fade_secs, 0) * @as(f32, decoder.sample_rate));
+        const n = @min(want, len / 2);
+        if (n == 0) return;
+        const ch = decoder.channels;
+        const tail_start = self.bounds.end - n;
+        const head = self.gpa.dupe(f32, t.samples[self.bounds.start * ch ..][0 .. n * ch]) catch return;
+        const tail = self.gpa.dupe(f32, t.samples[tail_start * ch ..][0 .. n * ch]) catch {
+            self.gpa.free(head);
+            return;
+        };
+        self.fade_saved = .{ .head_start = self.bounds.start, .head = head, .tail_start = tail_start, .tail = tail };
+        const nf: f32 = @floatFromInt(n);
+        for (0..n) |i| {
+            const x: f32 = @as(f32, @floatFromInt(i)) / nf * (std.math.pi / 2.0);
+            const up = @sin(x);
+            const down = @cos(x);
+            for (0..ch) |c| {
+                t.samples[(self.bounds.start + i) * ch + c] *= up;
+                t.samples[(tail_start + i) * ch + c] *= down;
+            }
+        }
+    }
+
+    /// Rebuild `bounds` and the fade from the current settings.
+    fn refresh(self: *Audio, t: *decoder.Track) void {
+        self.restoreFade(t);
+        self.updateBounds(t);
+        self.applyFade(t);
+        self.dirty = false;
     }
 
     /// Decode `path` and start playing it from the beginning.
@@ -62,7 +143,13 @@ pub const Audio = struct {
         self.unload();
         const t = try decoder.load(self.gpa, path);
         errdefer t.destroy(self.gpa);
-        if (self.trim_silence) self.bounds = decoder.audibleBounds(t.samples, self.silence_db, decoder.silence_window);
+        // The loudness graph shows the track as it is, before any fade.
+        waveform.analyze(&self.peaks, t.samples);
+        self.peaks_gen +%= 1;
+        self.updateBounds(t);
+        self.applyFade(t);
+        errdefer self.freeFade();
+        self.dirty = false;
         self.limitReader(t, 0);
         const p = try self.ctx.newPlayer(&t.reader);
         errdefer p.deinit();
@@ -70,8 +157,6 @@ pub const Audio = struct {
         try p.play();
         self.track = t;
         self.player = p;
-        waveform.analyze(&self.peaks, t.samples);
-        self.peaks_gen +%= 1;
     }
 
     pub fn pause(self: *Audio) void {
@@ -118,6 +203,7 @@ pub const Audio = struct {
             p.deinit();
             self.player = null;
         }
+        if (self.dirty) self.refresh(t);
         const total: f64 = @floatFromInt(t.frameCount());
         const frame: usize = @intFromFloat(std.math.clamp(secs * @as(f64, decoder.sample_rate), 0.0, total));
         self.limitReader(t, frame);
@@ -136,9 +222,8 @@ pub const Audio = struct {
     /// Position `t`'s reader at `frame` and, when silence is skipped, confine it
     /// to the audible part. Only call while no player uses the reader.
     fn limitReader(self: *const Audio, t: *decoder.Track, frame: usize) void {
-        const all = t.frameCount();
-        const lo = if (self.trim_silence) self.bounds.start else 0;
-        const hi = if (self.trim_silence) self.bounds.end else all;
+        const lo = self.bounds.start;
+        const hi = self.bounds.end;
         t.reader.end = hi * decoder.bytes_per_frame;
         t.reader.seek = std.math.clamp(frame, lo, hi) * decoder.bytes_per_frame;
     }
@@ -149,9 +234,24 @@ pub const Audio = struct {
     pub fn setTrimSilence(self: *Audio, on: bool, keep_playing: bool) !void {
         if (self.trim_silence == on) return;
         self.trim_silence = on;
-        if (self.track) |t| if (on) {
-            self.bounds = decoder.audibleBounds(t.samples, self.silence_db, decoder.silence_window);
-        };
+        self.dirty = true;
+        if (self.track != null) try self.seekSeconds(self.positionSeconds(), keep_playing);
+    }
+
+    /// Turn the loudest-part-with-fades mode on or off (same mechanism as
+    /// `setTrimSilence`).
+    pub fn setDancer(self: *Audio, on: bool, keep_playing: bool) !void {
+        if (self.dancer == on) return;
+        self.dancer = on;
+        self.dirty = true;
+        if (self.track != null) try self.seekSeconds(self.positionSeconds(), keep_playing);
+    }
+
+    pub fn setFadeSeconds(self: *Audio, secs: f32, keep_playing: bool) !void {
+        if (self.fade_secs == secs) return;
+        self.fade_secs = secs;
+        if (!self.dancer) return;
+        self.dirty = true;
         if (self.track != null) try self.seekSeconds(self.positionSeconds(), keep_playing);
     }
 
