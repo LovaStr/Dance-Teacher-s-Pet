@@ -138,8 +138,9 @@ pub const Audio = struct {
         self.dirty = false;
     }
 
-    /// Decode `path` and start playing it from the beginning.
-    pub fn load(self: *Audio, path: []const u8) !void {
+    /// Decode `path` and put it at the beginning. `autoplay` starts playing it;
+    /// otherwise it is left paused (ready for `resumePlayback`).
+    pub fn load(self: *Audio, path: []const u8, autoplay: bool) !void {
         self.unload();
         const t = try decoder.load(self.gpa, path);
         errdefer t.destroy(self.gpa);
@@ -154,7 +155,7 @@ pub const Audio = struct {
         const p = try self.ctx.newPlayer(&t.reader);
         errdefer p.deinit();
         p.setVolume(self.volume);
-        try p.play();
+        if (autoplay) try p.play();
         self.track = t;
         self.player = p;
     }
@@ -197,6 +198,20 @@ pub const Audio = struct {
     /// racing the mixer thread over the shared reader. `keep_playing` resumes
     /// playback afterwards; otherwise the new player is left paused.
     pub fn seekSeconds(self: *Audio, secs: f64, keep_playing: bool) !void {
+        return self.seekInner(secs, keep_playing, 0);
+    }
+
+    /// `seekSeconds` for a position the user picked (seek slider): it never lands
+    /// closer than `end_guard_secs` to the end of the part that plays, so dragging
+    /// into the dimmed area at the right starts the last few seconds instead of
+    /// ending the track on the spot.
+    pub fn seekSecondsGuarded(self: *Audio, secs: f64, keep_playing: bool) !void {
+        return self.seekInner(secs, keep_playing, end_guard_secs);
+    }
+
+    pub const end_guard_secs: f64 = 5;
+
+    fn seekInner(self: *Audio, secs_in: f64, keep_playing: bool, guard_secs: f64) !void {
         const t = self.track orelse return;
         if (self.player) |p| {
             p.pause();
@@ -204,8 +219,15 @@ pub const Audio = struct {
             self.player = null;
         }
         if (self.dirty) self.refresh(t);
+        const rate: f64 = @floatFromInt(decoder.sample_rate);
+        var secs = secs_in;
+        if (guard_secs > 0) {
+            const start_s = @as(f64, @floatFromInt(self.bounds.start)) / rate;
+            const end_s = @as(f64, @floatFromInt(self.bounds.end)) / rate;
+            secs = @min(secs, @max(start_s, end_s - guard_secs));
+        }
         const total: f64 = @floatFromInt(t.frameCount());
-        const frame: usize = @intFromFloat(std.math.clamp(secs * @as(f64, decoder.sample_rate), 0.0, total));
+        const frame: usize = @intFromFloat(std.math.clamp(secs * rate, 0.0, total));
         self.limitReader(t, frame);
 
         const p = try self.ctx.newPlayer(&t.reader);

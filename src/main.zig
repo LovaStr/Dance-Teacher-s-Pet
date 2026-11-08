@@ -213,13 +213,24 @@ fn addPath(st: *AppState, path: []const u8) AddError!void {
     }
 }
 
+/// After tracks were added to an empty play list, select the first one: load it,
+/// paused, so the graph shows it. Call before setting the status message.
+fn cueFirstIfNew(st: *AppState, before: usize) void {
+    if (before == 0 and st.entries.items.len > 0 and st.current == null) {
+        st.cue = 0;
+        loadIndex(st, 0, false);
+    }
+}
+
 /// Add `path` and report the outcome in the status bar.
 fn addPathReportingStatus(st: *AppState, path: []const u8) void {
     const before = st.entries.items.len;
     addPath(st, path) catch |err| {
+        cueFirstIfNew(st, before);
         st.setStatus("Could not add \"{s}\": {s}", .{ util.baseName(path), describeError(err) });
         return;
     };
+    cueFirstIfNew(st, before);
     const added = st.entries.items.len - before;
     if (added == 0) {
         st.setStatus("No supported audio files found in \"{s}\"", .{util.baseName(path)});
@@ -252,6 +263,11 @@ fn stopAudio(st: *AppState) void {
 }
 
 fn playIndex(st: *AppState, index: usize) void {
+    loadIndex(st, index, true);
+}
+
+/// Load a track and either start it or leave it paused at its beginning.
+fn loadIndex(st: *AppState, index: usize, autoplay: bool) void {
     if (index >= st.entries.items.len) return;
     const a = if (st.audio) |*au| au else {
         st.setStatus("No audio device available", .{});
@@ -262,7 +278,7 @@ fn playIndex(st: *AppState, index: usize) void {
     a.dancer = st.dancer;
     a.window_secs = st.dancer_secs;
     a.fade_secs = st.fade_secs.get();
-    a.load(e.path) catch |err| {
+    a.load(e.path, autoplay) catch |err| {
         a.unload();
         st.current = null;
         st.paused = false;
@@ -270,23 +286,27 @@ fn playIndex(st: *AppState, index: usize) void {
         return;
     };
     st.current = index;
-    st.paused = false;
-    st.setStatus("Playing", .{});
+    st.paused = !autoplay;
+    st.setStatus("{s}", .{if (autoplay) "Playing" else "Next track loaded, press play"});
 }
 
-/// Stop after a track ended on its own and cue the track that follows it, so the
-/// next press of play starts that one (wrapping to the first track past the end
-/// of the list). If played tracks are removed, the finished one is dropped too.
+/// Stop after a track ended on its own and cue the track that follows it (wrapping
+/// to the first track past the end of the list). The cued track is loaded, paused,
+/// so the graph shows what the next press of play will start. If played tracks
+/// are removed, the finished one is dropped too.
 fn stopAndCueNext(st: *AppState, finished: ?usize) void {
     stopAudio(st);
     st.cue = 0;
-    const f = finished orelse return;
-    if (st.remove_played) {
-        removeEntry(st, f);
-        st.cue = f;
-    } else {
-        st.cue = f + 1;
+    if (finished) |f| {
+        if (st.remove_played) {
+            removeEntry(st, f);
+            st.cue = f;
+        } else {
+            st.cue = f + 1;
+        }
     }
+    const len = st.entries.items.len;
+    if (len > 0) loadIndex(st, if (st.cue < len) st.cue else 0, false);
 }
 
 fn togglePlayPause(st: *AppState) void {
@@ -458,6 +478,7 @@ fn takePickedFiles(st: *AppState) void {
             failure = err;
         };
     }
+    cueFirstIfNew(st, before);
     if (failed) |path| {
         st.setStatus("Could not add \"{s}\": {s}", .{ util.baseName(path), describeError(failure) });
     } else if (st.entries.items.len == before) {
@@ -586,7 +607,7 @@ fn seekSet(ctx: *anyopaque, v: f32) void {
     const st: *AppState = @ptrCast(@alignCast(ctx));
     if (st.current == null) return;
     const a = if (st.audio) |*au| au else return;
-    a.seekSeconds(@as(f64, v) * a.durationSeconds(), !st.paused) catch |err| {
+    a.seekSecondsGuarded(@as(f64, v) * a.durationSeconds(), !st.paused) catch |err| {
         // The old player is already gone; stop instead of letting the track-end
         // detection mistake the missing player for a finished track.
         stopAudio(st);
@@ -1051,6 +1072,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             st.setStatus("Could not add \"{s}\": {s}", .{ util.baseName(arg), describeError(err) });
         };
     }
+    cueFirstIfNew(&st, 0);
     // Keep the error message if any argument failed; otherwise summarize.
     if (!arg_failed and st.entries.items.len > 0) st.setStatus("Loaded {d} track(s)", .{st.entries.items.len});
 
