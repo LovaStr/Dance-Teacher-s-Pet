@@ -37,9 +37,11 @@ inline fn colors() zigui.Palette {
 /// numeric type a zigui modifier expects.
 const layout = struct {
     /// Initial and minimum window size.
-    const window_w = 640;
+    const window_w = 720;
     const window_h = 720;
-    const window_min_w = 460;
+    /// Narrower than this the control row (six buttons and the volume slider)
+    /// no longer fits.
+    const window_min_w = 640;
     const window_min_h = 480;
 
     /// Left/right margin shared by the control strip, headers, rows and status bar.
@@ -101,8 +103,10 @@ const AppState = struct {
     auto_advance: bool = false,
     /// true: the silence at the start and end of a track is skipped.
     skip_silence: bool = true,
-    /// true: only the loudest 90 s of a track play, faded in and out.
+    /// true: only the loudest `dancer_secs` of a track play, faded in and out.
     dancer: bool = true,
+    /// Length of that part: `dancer_short_secs` (1.30 button) or `dancer_long_secs` (3.00 button).
+    dancer_secs: u32 = dancer_short_secs,
     /// Fade length (seconds) of the dancer mode; a change is applied once it
     /// has stopped moving (`fade_seen` / `fade_changed_at` track that).
     fade_secs: zigui.State(f32),
@@ -256,6 +260,7 @@ fn playIndex(st: *AppState, index: usize) void {
     const e = st.entries.items[index];
     a.trim_silence = st.skip_silence;
     a.dancer = st.dancer;
+    a.window_secs = st.dancer_secs;
     a.fade_secs = st.fade_secs.get();
     a.load(e.path) catch |err| {
         a.unload();
@@ -341,12 +346,30 @@ fn onToggleSkipSilence(st: *AppState) void {
     };
 }
 
-fn onToggleDancer(st: *AppState) void {
-    st.dancer = !st.dancer;
-    st.setStatus("{s}", .{if (st.dancer) "Playing the loudest 90 s of each track, with fades" else "Playing whole tracks"});
+const dancer_short_secs = 90;
+const dancer_long_secs = 180;
+
+fn onToggleDancerShort(st: *AppState) void {
+    toggleDancer(st, dancer_short_secs);
+}
+
+fn onToggleDancerLong(st: *AppState) void {
+    toggleDancer(st, dancer_long_secs);
+}
+
+/// A dancer button was pressed: switch its length off if it is the active one,
+/// otherwise make it the active one (which switches the other off).
+fn toggleDancer(st: *AppState, secs: u32) void {
+    st.dancer = !(st.dancer and st.dancer_secs == secs);
+    st.dancer_secs = secs;
+    if (st.dancer) {
+        st.setStatus("Playing the loudest {d}:{d:0>2} of each track, with fades", .{ secs / 60, secs % 60 });
+    } else {
+        st.setStatus("Playing whole tracks", .{});
+    }
     if (st.current == null) return;
     const a = if (st.audio) |*au| au else return;
-    a.setDancer(st.dancer, !st.paused) catch |err| {
+    a.setDancer(st.dancer, st.dancer_secs, !st.paused) catch |err| {
         stopAudio(st);
         st.setStatus("Seek failed: {s}", .{describeError(err)});
     };
@@ -781,7 +804,8 @@ fn controls(st: *AppState) zigui.View {
         zigui.IconButton(if (playing) .pause else .play, layout.button_icon, zigui.actionCtx(AppState, st, onPlayPause)),
         autoAdvanceToggle(st),
         skipSilenceToggle(st),
-        dancerToggle(st),
+        dancerToggle(st, "1.30", dancer_short_secs, onToggleDancerShort),
+        dancerToggle(st, "3.00", dancer_long_secs, onToggleDancerLong),
         removePlayedToggle(st),
         zigui.Spacer(),
         zigui.Icon(.volume, layout.volume_icon, null),
@@ -804,11 +828,11 @@ fn skipSilenceToggle(st: *AppState) zigui.View {
     return tileButton(.{ .image = img }, st.skip_silence, zigui.actionCtx(AppState, st, onToggleSkipSilence));
 }
 
-/// Dancer button, labelled with the length that plays ("1.30" = 90 s): full
-/// strength while only the loudest 90 s of a track play (with fades), dimmed
-/// grey while whole tracks play.
-fn dancerToggle(st: *AppState) zigui.View {
-    return tileButton(.{ .text = "1.30" }, st.dancer, zigui.actionCtx(AppState, st, onToggleDancer));
+/// Dancer button, labelled with the length that plays ("1.30" = 90 s, "3.00" =
+/// 180 s): full strength while it is the active length, dimmed grey otherwise.
+/// Only one of the two is ever active.
+fn dancerToggle(st: *AppState, label: []const u8, secs: u32, comptime onTap: fn (*AppState) void) zigui.View {
+    return tileButton(.{ .text = label }, st.dancer and st.dancer_secs == secs, zigui.actionCtx(AppState, st, onTap));
 }
 
 /// Trash button: dimmed grey while played tracks stay in the list, full strength

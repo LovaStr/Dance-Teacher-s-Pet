@@ -238,11 +238,12 @@ pub const Audio = struct {
         if (self.track != null) try self.seekSeconds(self.positionSeconds(), keep_playing);
     }
 
-    /// Turn the loudest-part-with-fades mode on or off (same mechanism as
-    /// `setTrimSilence`).
-    pub fn setDancer(self: *Audio, on: bool, keep_playing: bool) !void {
-        if (self.dancer == on) return;
+    /// Turn the loudest-part-with-fades mode on or off, and set the length of
+    /// that part (same mechanism as `setTrimSilence`).
+    pub fn setDancer(self: *Audio, on: bool, secs: u32, keep_playing: bool) !void {
+        if (self.dancer == on and self.window_secs == secs) return;
         self.dancer = on;
+        self.window_secs = secs;
         self.dirty = true;
         if (self.track != null) try self.seekSeconds(self.positionSeconds(), keep_playing);
     }
