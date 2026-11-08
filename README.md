@@ -6,7 +6,7 @@ Download: [latest release](../../releases/latest) (`lmp3-windows-x64.zip`: a sin
 
 ## What it does
 
-Plays MP3, FLAC and WAV files in a single window. The window shows the current track (title, track N of M, elapsed/total time) with a draggable seek slider, play/pause, a continuous-playback toggle, a remove-played-tracks toggle, a volume slider and the play list. Add files or folders from the window or on the command line (`lmp3 [file-or-folder ...]`), click a track to play it, and shuffle or clear the list.
+Plays MP3, FLAC and WAV files in a single window. The window shows the current track (title, track N of M, elapsed/total time) with a loudness graph that doubles as a draggable seek slider, play/pause, a continuous-playback toggle, a skip-silence toggle, two "dancer" buttons (1.30 and 3.00), a remove-played-tracks toggle, a volume slider and the play list. Add files or folders from the window or on the command line (`lmp3 [file-or-folder ...]`), click a track to play it, and shuffle or clear the list.
 
 It is also a working example of combining [zigui](https://github.com/ddalcu/zigui) (UI), [dr_libs](https://github.com/mackron/dr_libs) (decoding) and [zoto](https://github.com/braheezy/zoto) (audio output) in one program.
 
@@ -60,14 +60,17 @@ zig build run -- "C:\Users\you\Music"
 * Click a track in the play list to play it.
 * **Play/pause** button: pause and resume.
 * **Arrow** button: full strength = continue with the next track when one ends; dimmed = stop after the current track (the next track is cued, press play to start it).
+* **Trim** button (waveform with cut marks): full strength = the silence at the start and end of a track is skipped; dimmed = the whole track plays. The silence threshold is set in the settings panel.
+* **1.30** / **3.00** buttons (dancer mode): play only the loudest 90 s / 180 s of a track, faded in and out (fade length is in the settings panel). At most one is active; pressing the active one turns it off, and the other turns it on instead. 1.30 is on at start.
 * **Trash** button: full strength = played tracks are removed from the list; dimmed = they stay.
-* The progress bar is a slider: click or drag it to jump to another time in the song.
+* The loudness graph is the seek slider: click or drag it to jump to another time in the song. Parts that will not play (skipped silence, outside the dancer window) are shown dimmed; dragging into them starts 5 s before the end of the part that plays.
+* Adding files to an empty list selects the first track and shows its graph (paused). When a track ends with continuous playback off, the next track is loaded the same way.
 * **Random** shuffles the play list, stops any current playback and cues the first track of the new order; press play to start it.
 * **Add files…** / **Add folder…** add audio files (a folder adds the supported files in it). **Clear** empties the play list.
 * **Volume** slider on the right.
 * Errors (unreadable files, a missing audio device, a failed seek) show in the status bar instead of crashing the player.
 
-Defaults at start: volume 100 %, continuous playback off, remove played tracks on.
+Defaults at start: volume 100 %, continuous playback off, skip silence on, dancer 1.30 on, remove played tracks on.
 
 ## Architecture
 
@@ -80,9 +83,12 @@ lmp3_v2/
 │   ├── audio.zig        # PCM -> zoto player: play, pause, seek, volume
 │   ├── decoder.zig      # file -> PCM, through the C shim
 │   ├── lm_decode.c      # dr_libs wrapper: lm_open / lm_read_f32 / lm_close
+│   ├── waveform.zig     # pure loudness-graph analysis
+│   ├── icons.zig        # embedded button icon (src/icons/silence.rgba)
 │   ├── transport.zig    # pure track-end decision logic
 │   └── util.zig         # pure helpers (file names, path order, time split)
-├── tests/               # unit tests for decoder, transport and util
+├── tools/gen_icons.ps1  # regenerates the embedded icon (not needed to build)
+├── tests/               # unit tests for decoder, transport, util and waveform
 ├── third_party/zoto/    # vendored, patched zoto (changes in PATCHES.md)
 ├── .github/workflows/   # CI: build, test, and publish releases from main
 ├── build.zig            # build script and options
