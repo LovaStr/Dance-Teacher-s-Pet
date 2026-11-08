@@ -13,6 +13,7 @@ const decoder = @import("decoder.zig");
 const util = @import("util.zig");
 const transport = @import("transport.zig");
 const waveform = @import("waveform.zig");
+const icons = @import("icons.zig");
 const Audio = @import("audio.zig").Audio;
 
 const sdl = app.c;
@@ -36,9 +37,11 @@ inline fn colors() zigui.Palette {
 /// numeric type a zigui modifier expects.
 const layout = struct {
     /// Initial and minimum window size.
-    const window_w = 640;
+    const window_w = 720;
     const window_h = 720;
-    const window_min_w = 460;
+    /// Narrower than this the control row (six buttons and the volume slider)
+    /// no longer fits.
+    const window_min_w = 640;
     const window_min_h = 480;
 
     /// Left/right margin shared by the control strip, headers, rows and status bar.
@@ -63,6 +66,14 @@ const layout = struct {
     const settings_w = 320;
     const settings_spacing = 10;
     const button_icon = 30;
+    /// Size and corner radius of a custom image button's tile, chosen to match
+    /// the tile zigui draws around an `IconButton`.
+    const icon_tile_w = button_icon + 18;
+    const icon_tile_h = button_icon + 8;
+    const icon_glyph = 28;
+    /// Font size of the dancer button's 1.30 label.
+    const tile_text = 17;
+    const icon_radius = 8;
     const volume_icon = 18;
     const row_icon = 14;
     /// Width of the row's leading column (track number or play/pause icon).
@@ -92,8 +103,10 @@ const AppState = struct {
     auto_advance: bool = false,
     /// true: the silence at the start and end of a track is skipped.
     skip_silence: bool = true,
-    /// true: only the loudest 90 s of a track play, faded in and out.
+    /// true: only the loudest `dancer_secs` of a track play, faded in and out.
     dancer: bool = true,
+    /// Length of that part: `dancer_short_secs` (1.30 button) or `dancer_long_secs` (3.00 button).
+    dancer_secs: u32 = dancer_short_secs,
     /// Fade length (seconds) of the dancer mode; a change is applied once it
     /// has stopped moving (`fade_seen` / `fade_changed_at` track that).
     fade_secs: zigui.State(f32),
@@ -200,13 +213,24 @@ fn addPath(st: *AppState, path: []const u8) AddError!void {
     }
 }
 
+/// After tracks were added to an empty play list, select the first one: load it,
+/// paused, so the graph shows it. Call before setting the status message.
+fn cueFirstIfNew(st: *AppState, before: usize) void {
+    if (before == 0 and st.entries.items.len > 0 and st.current == null) {
+        st.cue = 0;
+        loadIndex(st, 0, false);
+    }
+}
+
 /// Add `path` and report the outcome in the status bar.
 fn addPathReportingStatus(st: *AppState, path: []const u8) void {
     const before = st.entries.items.len;
     addPath(st, path) catch |err| {
+        cueFirstIfNew(st, before);
         st.setStatus("Could not add \"{s}\": {s}", .{ util.baseName(path), describeError(err) });
         return;
     };
+    cueFirstIfNew(st, before);
     const added = st.entries.items.len - before;
     if (added == 0) {
         st.setStatus("No supported audio files found in \"{s}\"", .{util.baseName(path)});
@@ -239,6 +263,11 @@ fn stopAudio(st: *AppState) void {
 }
 
 fn playIndex(st: *AppState, index: usize) void {
+    loadIndex(st, index, true);
+}
+
+/// Load a track and either start it or leave it paused at its beginning.
+fn loadIndex(st: *AppState, index: usize, autoplay: bool) void {
     if (index >= st.entries.items.len) return;
     const a = if (st.audio) |*au| au else {
         st.setStatus("No audio device available", .{});
@@ -247,8 +276,9 @@ fn playIndex(st: *AppState, index: usize) void {
     const e = st.entries.items[index];
     a.trim_silence = st.skip_silence;
     a.dancer = st.dancer;
+    a.window_secs = st.dancer_secs;
     a.fade_secs = st.fade_secs.get();
-    a.load(e.path) catch |err| {
+    a.load(e.path, autoplay) catch |err| {
         a.unload();
         st.current = null;
         st.paused = false;
@@ -256,23 +286,27 @@ fn playIndex(st: *AppState, index: usize) void {
         return;
     };
     st.current = index;
-    st.paused = false;
-    st.setStatus("Playing", .{});
+    st.paused = !autoplay;
+    st.setStatus("{s}", .{if (autoplay) "Playing" else "Next track loaded, press play"});
 }
 
-/// Stop after a track ended on its own and cue the track that follows it, so the
-/// next press of play starts that one (wrapping to the first track past the end
-/// of the list). If played tracks are removed, the finished one is dropped too.
+/// Stop after a track ended on its own and cue the track that follows it (wrapping
+/// to the first track past the end of the list). The cued track is loaded, paused,
+/// so the graph shows what the next press of play will start. If played tracks
+/// are removed, the finished one is dropped too.
 fn stopAndCueNext(st: *AppState, finished: ?usize) void {
     stopAudio(st);
     st.cue = 0;
-    const f = finished orelse return;
-    if (st.remove_played) {
-        removeEntry(st, f);
-        st.cue = f;
-    } else {
-        st.cue = f + 1;
+    if (finished) |f| {
+        if (st.remove_played) {
+            removeEntry(st, f);
+            st.cue = f;
+        } else {
+            st.cue = f + 1;
+        }
     }
+    const len = st.entries.items.len;
+    if (len > 0) loadIndex(st, if (st.cue < len) st.cue else 0, false);
 }
 
 fn togglePlayPause(st: *AppState) void {
@@ -332,12 +366,30 @@ fn onToggleSkipSilence(st: *AppState) void {
     };
 }
 
-fn onToggleDancer(st: *AppState) void {
-    st.dancer = !st.dancer;
-    st.setStatus("{s}", .{if (st.dancer) "Playing the loudest 90 s of each track, with fades" else "Playing whole tracks"});
+const dancer_short_secs = 90;
+const dancer_long_secs = 180;
+
+fn onToggleDancerShort(st: *AppState) void {
+    toggleDancer(st, dancer_short_secs);
+}
+
+fn onToggleDancerLong(st: *AppState) void {
+    toggleDancer(st, dancer_long_secs);
+}
+
+/// A dancer button was pressed: switch its length off if it is the active one,
+/// otherwise make it the active one (which switches the other off).
+fn toggleDancer(st: *AppState, secs: u32) void {
+    st.dancer = !(st.dancer and st.dancer_secs == secs);
+    st.dancer_secs = secs;
+    if (st.dancer) {
+        st.setStatus("Playing the loudest {d}:{d:0>2} of each track, with fades", .{ secs / 60, secs % 60 });
+    } else {
+        st.setStatus("Playing whole tracks", .{});
+    }
     if (st.current == null) return;
     const a = if (st.audio) |*au| au else return;
-    a.setDancer(st.dancer, !st.paused) catch |err| {
+    a.setDancer(st.dancer, st.dancer_secs, !st.paused) catch |err| {
         stopAudio(st);
         st.setStatus("Seek failed: {s}", .{describeError(err)});
     };
@@ -426,6 +478,7 @@ fn takePickedFiles(st: *AppState) void {
             failure = err;
         };
     }
+    cueFirstIfNew(st, before);
     if (failed) |path| {
         st.setStatus("Could not add \"{s}\": {s}", .{ util.baseName(path), describeError(failure) });
     } else if (st.entries.items.len == before) {
@@ -554,7 +607,7 @@ fn seekSet(ctx: *anyopaque, v: f32) void {
     const st: *AppState = @ptrCast(@alignCast(ctx));
     if (st.current == null) return;
     const a = if (st.audio) |*au| au else return;
-    a.seekSeconds(@as(f64, v) * a.durationSeconds(), !st.paused) catch |err| {
+    a.seekSecondsGuarded(@as(f64, v) * a.durationSeconds(), !st.paused) catch |err| {
         // The old player is already gone; stop instead of letting the track-end
         // detection mistake the missing player for a finished track.
         stopAudio(st);
@@ -772,7 +825,8 @@ fn controls(st: *AppState) zigui.View {
         zigui.IconButton(if (playing) .pause else .play, layout.button_icon, zigui.actionCtx(AppState, st, onPlayPause)),
         autoAdvanceToggle(st),
         skipSilenceToggle(st),
-        dancerToggle(st),
+        dancerToggle(st, "1.30", dancer_short_secs, onToggleDancerShort),
+        dancerToggle(st, "3.00", dancer_long_secs, onToggleDancerLong),
         removePlayedToggle(st),
         zigui.Spacer(),
         zigui.Icon(.volume, layout.volume_icon, null),
@@ -787,18 +841,19 @@ fn autoAdvanceToggle(st: *AppState) zigui.View {
     return if (st.auto_advance) btn else btn.opacity(layout.dimmed);
 }
 
-/// Waveform button: full strength while the silence at the start and end of a
-/// track is skipped, dimmed grey while it is played.
+/// Trim button: full strength while the silence at the start and end of a track
+/// is skipped, dimmed grey while it is played.
 fn skipSilenceToggle(st: *AppState) zigui.View {
-    const btn = zigui.IconButton(.audio_waveform, layout.button_icon, zigui.actionCtx(AppState, st, onToggleSkipSilence));
-    return if (st.skip_silence) btn else btn.opacity(layout.dimmed);
+    const dark = app.colorScheme() == .dark;
+    const img: zigui.canvas.Image = .{ .width = icons.size, .height = icons.size, .pixels = icons.silence(dark) };
+    return tileButton(.{ .image = img }, st.skip_silence, zigui.actionCtx(AppState, st, onToggleSkipSilence));
 }
 
-/// Dancer button: full strength while only the loudest 90 s of a track play (with
-/// fades), dimmed grey while whole tracks play.
-fn dancerToggle(st: *AppState) zigui.View {
-    const btn = zigui.IconButton(.person_standing, layout.button_icon, zigui.actionCtx(AppState, st, onToggleDancer));
-    return if (st.dancer) btn else btn.opacity(layout.dimmed);
+/// Dancer button, labelled with the length that plays ("1.30" = 90 s, "3.00" =
+/// 180 s): full strength while it is the active length, dimmed grey otherwise.
+/// Only one of the two is ever active.
+fn dancerToggle(st: *AppState, label: []const u8, secs: u32, comptime onTap: fn (*AppState) void) zigui.View {
+    return tileButton(.{ .text = label }, st.dancer and st.dancer_secs == secs, zigui.actionCtx(AppState, st, onTap));
 }
 
 /// Trash button: dimmed grey while played tracks stay in the list, full strength
@@ -808,6 +863,64 @@ fn removePlayedToggle(st: *AppState) zigui.View {
     return if (st.remove_played) btn else btn.opacity(layout.dimmed);
 }
 
+const TileContent = union(enum) { image: zigui.canvas.Image, text: []const u8 };
+
+/// Same footprint and look as an `IconButton` (a rounded tile with the content
+/// centred in it), but showing an embedded picture or a short text.
+fn tileButton(content: TileContent, on: bool, action: zigui.Callback) zigui.View {
+    const c = colors();
+    const ctx = zigui.view.buildAlloc().create(TilePaint) catch return zigui.Spacer();
+    ctx.* = .{
+        .content = content,
+        .on = on,
+        .chrome = c.control_background,
+        .border = c.control_border,
+        .backdrop = c.window_background,
+        .label = c.label,
+    };
+    return zigui.Drawing(TilePaint, ctx, paintTile)
+        .frame(layout.icon_tile_w, layout.icon_tile_h)
+        .cornerRadius(layout.icon_radius)
+        .hoverFill(c.hover)
+        .onTap(action);
+}
+
+const TilePaint = struct {
+    content: TileContent,
+    on: bool,
+    chrome: zigui.Color,
+    border: zigui.Color,
+    backdrop: zigui.Color,
+    label: zigui.Color,
+};
+
+/// The tile, then its content centred in it. zigui cannot fade an image, so a
+/// switched-off button is drawn fainter by laying the window colour over the
+/// glyph (text is simply drawn with less alpha).
+fn paintTile(ctx: *const TilePaint, pen: *zigui.Pen, r: zigui.Rect) std.mem.Allocator.Error!void {
+    const fade: f32 = if (ctx.on) 1 else layout.dimmed;
+    try pen.canvas.fillRoundedRect(r, layout.icon_radius, ctx.chrome.multiplyAlpha(fade));
+    try pen.canvas.strokeRoundedRect(r, layout.icon_radius, 1, ctx.border.multiplyAlpha(fade));
+    switch (ctx.content) {
+        .image => |img| {
+            const g: zigui.Rect = .{
+                .x = r.x + (r.width - layout.icon_glyph) / 2,
+                .y = r.y + (r.height - layout.icon_glyph) / 2,
+                .width = layout.icon_glyph,
+                .height = layout.icon_glyph,
+            };
+            try pen.canvas.drawImage(g, img);
+            if (!ctx.on) try pen.canvas.fillRect(g, ctx.backdrop.multiplyAlpha(1 - layout.dimmed));
+        },
+        .text => |s| {
+            const px = layout.tile_text;
+            try pen.text(s, px, ctx.label.multiplyAlpha(fade), .{
+                .x = r.x + (r.width - pen.textWidth(s, px)) / 2,
+                .y = r.y + (r.height - pen.lineHeight(px)) / 2,
+            });
+        },
+    }
+}
 fn playlistHeader(st: *AppState) zigui.View {
     return zigui.HStack(.{
         zigui.Text(zigui.components.fmt("Play list · {d}", .{st.entries.items.len})).font(.headline),
@@ -959,6 +1072,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             st.setStatus("Could not add \"{s}\": {s}", .{ util.baseName(arg), describeError(err) });
         };
     }
+    cueFirstIfNew(&st, 0);
     // Keep the error message if any argument failed; otherwise summarize.
     if (!arg_failed and st.entries.items.len > 0) st.setStatus("Loaded {d} track(s)", .{st.entries.items.len});
 
