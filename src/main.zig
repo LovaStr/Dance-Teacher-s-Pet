@@ -13,6 +13,7 @@ const decoder = @import("decoder.zig");
 const util = @import("util.zig");
 const transport = @import("transport.zig");
 const waveform = @import("waveform.zig");
+const icons = @import("icons.zig");
 const Audio = @import("audio.zig").Audio;
 
 const sdl = app.c;
@@ -63,6 +64,14 @@ const layout = struct {
     const settings_w = 320;
     const settings_spacing = 10;
     const button_icon = 30;
+    /// Size and corner radius of a custom image button's tile, chosen to match
+    /// the tile zigui draws around an `IconButton`.
+    const icon_tile_w = button_icon + 18;
+    const icon_tile_h = button_icon + 8;
+    const icon_glyph = 28;
+    /// Font size of the dancer button's 1.30 label.
+    const tile_text = 17;
+    const icon_radius = 8;
     const volume_icon = 18;
     const row_icon = 14;
     /// Width of the row's leading column (track number or play/pause icon).
@@ -787,18 +796,19 @@ fn autoAdvanceToggle(st: *AppState) zigui.View {
     return if (st.auto_advance) btn else btn.opacity(layout.dimmed);
 }
 
-/// Waveform button: full strength while the silence at the start and end of a
-/// track is skipped, dimmed grey while it is played.
+/// Trim button: full strength while the silence at the start and end of a track
+/// is skipped, dimmed grey while it is played.
 fn skipSilenceToggle(st: *AppState) zigui.View {
-    const btn = zigui.IconButton(.audio_waveform, layout.button_icon, zigui.actionCtx(AppState, st, onToggleSkipSilence));
-    return if (st.skip_silence) btn else btn.opacity(layout.dimmed);
+    const dark = app.colorScheme() == .dark;
+    const img: zigui.canvas.Image = .{ .width = icons.size, .height = icons.size, .pixels = icons.silence(dark) };
+    return tileButton(.{ .image = img }, st.skip_silence, zigui.actionCtx(AppState, st, onToggleSkipSilence));
 }
 
-/// Dancer button: full strength while only the loudest 90 s of a track play (with
-/// fades), dimmed grey while whole tracks play.
+/// Dancer button, labelled with the length that plays ("1.30" = 90 s): full
+/// strength while only the loudest 90 s of a track play (with fades), dimmed
+/// grey while whole tracks play.
 fn dancerToggle(st: *AppState) zigui.View {
-    const btn = zigui.IconButton(.person_standing, layout.button_icon, zigui.actionCtx(AppState, st, onToggleDancer));
-    return if (st.dancer) btn else btn.opacity(layout.dimmed);
+    return tileButton(.{ .text = "1.30" }, st.dancer, zigui.actionCtx(AppState, st, onToggleDancer));
 }
 
 /// Trash button: dimmed grey while played tracks stay in the list, full strength
@@ -808,6 +818,64 @@ fn removePlayedToggle(st: *AppState) zigui.View {
     return if (st.remove_played) btn else btn.opacity(layout.dimmed);
 }
 
+const TileContent = union(enum) { image: zigui.canvas.Image, text: []const u8 };
+
+/// Same footprint and look as an `IconButton` (a rounded tile with the content
+/// centred in it), but showing an embedded picture or a short text.
+fn tileButton(content: TileContent, on: bool, action: zigui.Callback) zigui.View {
+    const c = colors();
+    const ctx = zigui.view.buildAlloc().create(TilePaint) catch return zigui.Spacer();
+    ctx.* = .{
+        .content = content,
+        .on = on,
+        .chrome = c.control_background,
+        .border = c.control_border,
+        .backdrop = c.window_background,
+        .label = c.label,
+    };
+    return zigui.Drawing(TilePaint, ctx, paintTile)
+        .frame(layout.icon_tile_w, layout.icon_tile_h)
+        .cornerRadius(layout.icon_radius)
+        .hoverFill(c.hover)
+        .onTap(action);
+}
+
+const TilePaint = struct {
+    content: TileContent,
+    on: bool,
+    chrome: zigui.Color,
+    border: zigui.Color,
+    backdrop: zigui.Color,
+    label: zigui.Color,
+};
+
+/// The tile, then its content centred in it. zigui cannot fade an image, so a
+/// switched-off button is drawn fainter by laying the window colour over the
+/// glyph (text is simply drawn with less alpha).
+fn paintTile(ctx: *const TilePaint, pen: *zigui.Pen, r: zigui.Rect) std.mem.Allocator.Error!void {
+    const fade: f32 = if (ctx.on) 1 else layout.dimmed;
+    try pen.canvas.fillRoundedRect(r, layout.icon_radius, ctx.chrome.multiplyAlpha(fade));
+    try pen.canvas.strokeRoundedRect(r, layout.icon_radius, 1, ctx.border.multiplyAlpha(fade));
+    switch (ctx.content) {
+        .image => |img| {
+            const g: zigui.Rect = .{
+                .x = r.x + (r.width - layout.icon_glyph) / 2,
+                .y = r.y + (r.height - layout.icon_glyph) / 2,
+                .width = layout.icon_glyph,
+                .height = layout.icon_glyph,
+            };
+            try pen.canvas.drawImage(g, img);
+            if (!ctx.on) try pen.canvas.fillRect(g, ctx.backdrop.multiplyAlpha(1 - layout.dimmed));
+        },
+        .text => |s| {
+            const px = layout.tile_text;
+            try pen.text(s, px, ctx.label.multiplyAlpha(fade), .{
+                .x = r.x + (r.width - pen.textWidth(s, px)) / 2,
+                .y = r.y + (r.height - pen.lineHeight(px)) / 2,
+            });
+        },
+    }
+}
 fn playlistHeader(st: *AppState) zigui.View {
     return zigui.HStack(.{
         zigui.Text(zigui.components.fmt("Play list · {d}", .{st.entries.items.len})).font(.headline),
