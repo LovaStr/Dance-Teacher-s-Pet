@@ -1,18 +1,14 @@
 //! Perceived loudness of a decoded track (ITU-R BS.1770 / EBU R128 integrated
 //! loudness: K-weighting plus gating) and the gain that brings it to a target.
 //!
-//! Targets are given in ReplayGain-style dB, where 89 dB is -18 LUFS (the
-//! ReplayGain 2.0 reference), so `LUFS = db - reference_offset_db`. Pure code,
-//! no dependencies besides std.
+//! Targets are given in LUFS. Pure code, no dependencies besides std.
 
 const std = @import("std");
 
 pub const sample_rate: u32 = 44100;
-/// `db - reference_offset_db` converts the ReplayGain-style scale to LUFS.
-pub const reference_offset_db: f64 = 107;
-pub const min_target_db: f32 = 83;
-pub const max_target_db: f32 = 100;
-pub const default_target_db: f32 = 93;
+pub const min_target_lufs: f32 = -24;
+pub const max_target_lufs: f32 = -7;
+pub const default_target_lufs: f32 = -10;
 
 pub const Result = struct {
     /// Integrated loudness in LUFS.
@@ -141,11 +137,128 @@ pub fn measure(gpa: std.mem.Allocator, samples: []const f32) ?Result {
     return .{ .lufs = blockLufs(sum / @as(f64, @floatFromInt(n))), .peak = peak };
 }
 
-/// Linear gain that brings a track of loudness `lufs` to `target_db` (ReplayGain
-/// style dB). It never pushes the sample peak above full scale, so a loud
-/// track may end up below the target instead of clipping.
-pub fn gainFor(lufs: f64, peak: f32, target_db: f32) f32 {
-    var gain_db = (@as(f64, target_db) - reference_offset_db) - lufs;
-    if (peak > 0) gain_db = @min(gain_db, -20.0 * std.math.log10(@as(f64, peak)));
-    return @floatCast(std.math.pow(f64, 10.0, gain_db / 20.0));
+/// Longest gain reduction (dB) the limiter may apply, and the default.
+pub const max_reduction_limit_db: f32 = 12;
+pub const default_reduction_db: f32 = 6;
+
+/// Gain in dB that brings a track of loudness `lufs` to `target_lufs`, held back
+/// so that the limiter never has to reduce the peak by more than `max_red_db`.
+/// With `max_red_db` 0 that is a plain gain that keeps the peak at full scale.
+pub fn gainDb(lufs: f64, peak: f32, target_lufs: f32, max_red_db: f32) f64 {
+    var gain_db = @as(f64, target_lufs) - lufs;
+    if (peak > 0) gain_db = @min(gain_db, @as(f64, max_red_db) - 20.0 * std.math.log10(@as(f64, peak)));
+    return gain_db;
 }
+
+/// Linear form of `gainDb`.
+pub fn gainFor(lufs: f64, peak: f32, target_lufs: f32, max_red_db: f32) f32 {
+    return @floatCast(std.math.pow(f64, 10.0, gainDb(lufs, peak, target_lufs, max_red_db) / 20.0));
+}
+
+const look_ahead: usize = sample_rate / 100; // 10 ms: the gain reaches its dip this far before a peak
+const release_secs: f64 = 0.15;
+
+/// Gain envelope (<= 1) that keeps `src * g` at or below full scale: a look-ahead
+/// minimum of the needed reduction (limited to `min_gain`), a fast-attack /
+/// exponential-release follower, then a moving average that turns the attack into
+/// a smooth ramp ending at the peak. Averaging values that are all at or below the
+/// need keeps the result at or below the need. `env` has one value per frame.
+fn limiterEnvelope(gpa: std.mem.Allocator, src: []const f32, g: f32, min_gain: f32, env: []f32) !void {
+    const frames = env.len;
+    const n = @min(look_ahead, frames);
+    for (0..frames) |i| {
+        const p = @max(@abs(src[i * 2]), @abs(src[i * 2 + 1])) * g;
+        env[i] = if (p > 1.0) @max(1.0 / p, min_gain) else 1.0;
+    }
+
+    // Look-ahead minimum over frames i..i+n-1 (monotonic deque, walking backwards).
+    const dq_idx = try gpa.alloc(u32, n + 1);
+    defer gpa.free(dq_idx);
+    const dq_val = try gpa.alloc(f32, n + 1);
+    defer gpa.free(dq_val);
+    const cap = n + 1;
+    var head: usize = 0;
+    var len: usize = 0;
+    var i = frames;
+    while (i > 0) {
+        i -= 1;
+        while (len > 0 and dq_idx[head] >= i + n) {
+            head = (head + 1) % cap;
+            len -= 1;
+        }
+        const v = env[i];
+        while (len > 0 and dq_val[(head + len - 1) % cap] >= v) len -= 1;
+        dq_idx[(head + len) % cap] = @intCast(i);
+        dq_val[(head + len) % cap] = v;
+        len += 1;
+        env[i] = dq_val[head];
+    }
+
+    // Release: the envelope recovers towards 1 exponentially.
+    const c: f32 = @floatCast(@exp(-1.0 / (release_secs * @as(f64, sample_rate))));
+    var prev: f32 = 1.0;
+    for (env) |*e| {
+        prev = @min(e.*, 1.0 - (1.0 - prev) * c);
+        e.* = prev;
+    }
+
+    // Moving average over the last n values (padded with the first one).
+    const ring = try gpa.alloc(f32, n);
+    defer gpa.free(ring);
+    @memset(ring, env[0]);
+    var sum: f64 = @as(f64, env[0]) * @as(f64, @floatFromInt(n));
+    var pos: usize = 0;
+    for (env) |*e| {
+        sum += @as(f64, e.*) - @as(f64, ring[pos]);
+        ring[pos] = e.*;
+        pos = (pos + 1) % n;
+        e.* = @floatCast(sum / @as(f64, @floatFromInt(n)));
+    }
+}
+
+fn scaleInto(out: []f32, src: []const f32, g: f32) void {
+    for (out, src) |*o, s| o.* = std.math.clamp(s * g, -1.0, 1.0);
+}
+
+/// Fill `out` (same length as `src`, interleaved stereo) with `src` brought to
+/// `target_lufs`. `m` is the measurement of `src`. The gain is raised as far as a
+/// limiter that reduces peaks by at most `max_red_db` allows; the result is
+/// re-measured and the gain adjusted a few times, because limiting costs some
+/// loudness. With `max_red_db` 0 (or when memory is short) it is a plain gain
+/// that keeps the peak at full scale.
+pub fn normalize(gpa: std.mem.Allocator, src: []const f32, out: []f32, m: Result, target_lufs: f32, max_red_db: f32) void {
+    std.debug.assert(src.len == out.len);
+    if (max_red_db < 0.05) {
+        scaleInto(out, src, gainFor(m.lufs, m.peak, target_lufs, 0));
+        return;
+    }
+    const frames = src.len / 2;
+    const env = gpa.alloc(f32, frames) catch {
+        scaleInto(out, src, gainFor(m.lufs, m.peak, target_lufs, 0));
+        return;
+    };
+    defer gpa.free(env);
+    const min_gain: f32 = @floatCast(std.math.pow(f64, 10.0, -@as(f64, max_red_db) / 20.0));
+
+    var g_db = gainDb(m.lufs, m.peak, target_lufs, max_red_db);
+    var iter: u32 = 0;
+    while (true) : (iter += 1) {
+        const g: f32 = @floatCast(std.math.pow(f64, 10.0, g_db / 20.0));
+        limiterEnvelope(gpa, src, g, min_gain, env) catch {
+            scaleInto(out, src, gainFor(m.lufs, m.peak, target_lufs, 0));
+            return;
+        };
+        for (0..frames) |i| {
+            const k = g * env[i];
+            out[i * 2] = std.math.clamp(src[i * 2] * k, -1.0, 1.0);
+            out[i * 2 + 1] = std.math.clamp(src[i * 2 + 1] * k, -1.0, 1.0);
+        }
+        if (iter >= 3) return;
+        const got = measure(gpa, out) orelse return;
+        const err = @as(f64, target_lufs) - got.lufs;
+        const next = @min(g_db + err, gainDb(m.lufs, m.peak, 1000, max_red_db));
+        if (@abs(next - g_db) < 0.05) return;
+        g_db = next;
+    }
+}
+

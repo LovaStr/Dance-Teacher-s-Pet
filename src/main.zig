@@ -118,7 +118,9 @@ const AppState = struct {
     /// moving (`norm_seen` / `norm_changed_at`).
     norm_on: bool = true,
     norm_target: zigui.State(f32),
-    norm_seen: f32 = loudness.default_target_db,
+    norm_reduction: zigui.State(f32),
+    norm_seen: f32 = loudness.default_target_lufs,
+    red_seen: f32 = loudness.default_reduction_db,
     norm_changed_at: u64 = 0,
     /// true: a track that has finished playing is removed from the play list.
     remove_played: bool = true,
@@ -287,7 +289,8 @@ fn loadIndex(st: *AppState, index: usize, autoplay: bool) void {
     a.window_secs = st.dancer_secs;
     a.fade_secs = st.fade_secs.get();
     a.normalize = st.norm_on;
-    a.target_db = st.norm_target.get();
+    a.target_lufs = st.norm_target.get();
+    a.max_reduction_db = st.norm_reduction.get();
     a.load(e.path, autoplay) catch |err| {
         a.unload();
         st.current = null;
@@ -557,14 +560,16 @@ fn frameHook() void {
 
     // Same for the loudness target; the on/off button applies at once.
     const want_norm = st.norm_target.get();
-    if (want_norm != a.target_db or st.norm_on != a.normalize) {
+    const want_red = st.norm_reduction.get();
+    if (want_norm != a.target_lufs or want_red != a.max_reduction_db or st.norm_on != a.normalize) {
         const now = sdl.SDL_GetTicks();
-        if (want_norm != st.norm_seen) {
+        if (want_norm != st.norm_seen or want_red != st.red_seen) {
             st.norm_seen = want_norm;
+            st.red_seen = want_red;
             st.norm_changed_at = now;
         }
         if (!st.isPlaying() or now -% st.norm_changed_at >= 250) {
-            a.setNormalization(st.norm_on, want_norm, !st.paused) catch |err| {
+            a.setNormalization(st.norm_on, want_norm, want_red, !st.paused) catch |err| {
                 stopAudio(st);
                 st.setStatus("Seek failed: {s}", .{describeError(err)});
             };
@@ -843,8 +848,10 @@ fn settingsView(st: *AppState) zigui.View {
         zigui.Text(zigui.components.fmt("Fade in / out: {d:.1} s", .{st.fade_secs.get()})).font(.subheadline).foreground(c.secondary_label),
         zigui.Slider(st.fade_secs.binding(), 0, 5).frameMaxWidth(),
         zigui.Button(if (st.norm_on) "Loudness normalization: on" else "Loudness normalization: off", zigui.actionCtx(AppState, st, onToggleNormalize)),
-        zigui.Text(zigui.components.fmt("Target loudness: {d:.0} dB ({d:.0} LUFS)", .{ st.norm_target.get(), st.norm_target.get() - @as(f32, @floatCast(loudness.reference_offset_db)) })).font(.subheadline).foreground(c.secondary_label),
-        zigui.Slider(st.norm_target.binding(), loudness.min_target_db, loudness.max_target_db).frameMaxWidth(),
+        zigui.Text(zigui.components.fmt("Target loudness: {d:.0} LUFS", .{st.norm_target.get()})).font(.subheadline).foreground(c.secondary_label),
+        zigui.Slider(st.norm_target.binding(), loudness.min_target_lufs, loudness.max_target_lufs).frameMaxWidth(),
+        zigui.Text(zigui.components.fmt("Limiter: up to {d:.1} dB gain reduction", .{st.norm_reduction.get()})).font(.subheadline).foreground(c.secondary_label),
+        zigui.Slider(st.norm_reduction.binding(), 0, loudness.max_reduction_limit_db).frameMaxWidth(),
         zigui.HStack(.{
             zigui.Spacer(),
             zigui.Button("Close", zigui.actionCtx(AppState, st, onCloseSettings)),
@@ -1071,7 +1078,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
         .silence_db = zigui.State(f32).init(gpa, -34),
         .fade_secs = zigui.State(f32).init(gpa, 2),
         .fade_seen = 2,
-        .norm_target = zigui.State(f32).init(gpa, loudness.default_target_db),
+        .norm_target = zigui.State(f32).init(gpa, loudness.default_target_lufs),
+        .norm_reduction = zigui.State(f32).init(gpa, loudness.default_reduction_db),
     };
     defer {
         freeEntries(&st);
@@ -1085,6 +1093,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         st.silence_db.deinit();
         st.fade_secs.deinit();
         st.norm_target.deinit();
+        st.norm_reduction.deinit();
         st.wave_img.deinit(gpa);
     }
     g_app = &st;
@@ -1123,3 +1132,4 @@ pub fn main(init: std.process.Init.Minimal) !void {
         .min_height = layout.window_min_h,
     }, body, null);
 }
+
