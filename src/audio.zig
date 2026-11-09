@@ -6,6 +6,7 @@ const builtin = @import("builtin");
 const zoto = @import("zoto");
 const decoder = @import("decoder.zig");
 const waveform = @import("waveform.zig");
+const loudness = @import("loudness.zig");
 
 pub const Audio = struct {
     gpa: std.mem.Allocator,
@@ -35,9 +36,17 @@ pub const Audio = struct {
     /// The samples under the fade slopes, as they were before the fade was applied
     /// to the track's buffer (see `applyFade`).
     fade_saved: SavedFade = .{},
-    /// `dancer`, `fade_secs` or `trim_silence` changed: `bounds` and the faded
-    /// samples are rebuilt by the next `seekSeconds`, while no player is attached.
+    /// `dancer`, `fade_secs`, `trim_silence` or the normalization changed:
+    /// `bounds` and the faded samples are rebuilt by the next `seekSeconds`,
+    /// while no player is attached.
     dirty: bool = false,
+    /// Scale each track to `target_db` (ReplayGain-style dB, see loudness.zig).
+    normalize: bool = true,
+    target_db: f32 = loudness.default_target_db,
+    /// Measured loudness of `track` (null when it could not be measured) and the
+    /// gain currently baked into its samples.
+    track_loudness: ?loudness.Result = null,
+    applied_gain: f32 = 1,
 
     const SavedFade = struct {
         head_start: usize = 0,
@@ -91,6 +100,23 @@ pub const Audio = struct {
         self.freeFade();
     }
 
+    /// The gain `t` should have for the current settings.
+    fn wantedGain(self: *const Audio) f32 {
+        const r = self.track_loudness orelse return 1;
+        if (!self.normalize) return 1;
+        return loudness.gainFor(r.lufs, r.peak, self.target_db);
+    }
+
+    /// Scale `t`'s samples from `applied_gain` to the wanted gain. The fade must
+    /// be restored first, and no player may use the buffer.
+    fn rescale(self: *Audio, t: *decoder.Track) void {
+        const want = self.wantedGain();
+        if (want == self.applied_gain) return;
+        const ratio = want / self.applied_gain;
+        for (t.samples) |*s| s.* = std.math.clamp(s.* * ratio, -1.0, 1.0);
+        self.applied_gain = want;
+    }
+
     /// Recompute `bounds` for the current settings (the fade must be restored).
     fn updateBounds(self: *Audio, t: *decoder.Track) void {
         self.bounds = if (self.dancer)
@@ -133,6 +159,7 @@ pub const Audio = struct {
     /// Rebuild `bounds` and the fade from the current settings.
     fn refresh(self: *Audio, t: *decoder.Track) void {
         self.restoreFade(t);
+        self.rescale(t);
         self.updateBounds(t);
         self.applyFade(t);
         self.dirty = false;
@@ -147,6 +174,9 @@ pub const Audio = struct {
         // The loudness graph shows the track as it is, before any fade.
         waveform.analyze(&self.peaks, t.samples);
         self.peaks_gen +%= 1;
+        self.track_loudness = loudness.measure(self.gpa, t.samples);
+        self.applied_gain = 1;
+        self.rescale(t);
         self.updateBounds(t);
         self.applyFade(t);
         errdefer self.freeFade();
@@ -268,6 +298,17 @@ pub const Audio = struct {
         self.window_secs = secs;
         self.dirty = true;
         if (self.track != null) try self.seekSeconds(self.positionSeconds(), keep_playing);
+    }
+
+    /// Switch loudness normalization on/off or change its target. The loaded
+    /// track follows at once (same mechanism as `setTrimSilence`).
+    pub fn setNormalization(self: *Audio, on: bool, target_db: f32, keep_playing: bool) !void {
+        if (self.normalize == on and self.target_db == target_db) return;
+        self.normalize = on;
+        self.target_db = target_db;
+        if (self.track == null or self.wantedGain() == self.applied_gain) return;
+        self.dirty = true;
+        try self.seekSeconds(self.positionSeconds(), keep_playing);
     }
 
     pub fn setFadeSeconds(self: *Audio, secs: f32, keep_playing: bool) !void {

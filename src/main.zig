@@ -13,6 +13,7 @@ const decoder = @import("decoder.zig");
 const util = @import("util.zig");
 const transport = @import("transport.zig");
 const waveform = @import("waveform.zig");
+const loudness = @import("loudness.zig");
 const icons = @import("icons.zig");
 const Audio = @import("audio.zig").Audio;
 
@@ -112,6 +113,13 @@ const AppState = struct {
     fade_secs: zigui.State(f32),
     fade_seen: f32 = 0,
     fade_changed_at: u64 = 0,
+    /// Loudness normalization (settings dialog). A new target restarts the
+    /// player like the fade length does, so it is applied once it has stopped
+    /// moving (`norm_seen` / `norm_changed_at`).
+    norm_on: bool = true,
+    norm_target: zigui.State(f32),
+    norm_seen: f32 = loudness.default_target_db,
+    norm_changed_at: u64 = 0,
     /// true: a track that has finished playing is removed from the play list.
     remove_played: bool = true,
     /// Track that play starts from when nothing is loaded (see `stopAndCueNext`).
@@ -278,6 +286,8 @@ fn loadIndex(st: *AppState, index: usize, autoplay: bool) void {
     a.dancer = st.dancer;
     a.window_secs = st.dancer_secs;
     a.fade_secs = st.fade_secs.get();
+    a.normalize = st.norm_on;
+    a.target_db = st.norm_target.get();
     a.load(e.path, autoplay) catch |err| {
         a.unload();
         st.current = null;
@@ -397,6 +407,10 @@ fn toggleDancer(st: *AppState, secs: u32) void {
 
 fn onOpenSettings(st: *AppState) void {
     st.show_settings.set(true);
+}
+
+fn onToggleNormalize(st: *AppState) void {
+    st.norm_on = !st.norm_on;
 }
 
 fn onCloseSettings(st: *AppState) void {
@@ -535,6 +549,22 @@ fn frameHook() void {
         }
         if (!st.isPlaying() or now -% st.fade_changed_at >= 250) {
             a.setFadeSeconds(want_fade, !st.paused) catch |err| {
+                stopAudio(st);
+                st.setStatus("Seek failed: {s}", .{describeError(err)});
+            };
+        }
+    }
+
+    // Same for the loudness target; the on/off button applies at once.
+    const want_norm = st.norm_target.get();
+    if (want_norm != a.target_db or st.norm_on != a.normalize) {
+        const now = sdl.SDL_GetTicks();
+        if (want_norm != st.norm_seen) {
+            st.norm_seen = want_norm;
+            st.norm_changed_at = now;
+        }
+        if (!st.isPlaying() or now -% st.norm_changed_at >= 250) {
+            a.setNormalization(st.norm_on, want_norm, !st.paused) catch |err| {
                 stopAudio(st);
                 st.setStatus("Seek failed: {s}", .{describeError(err)});
             };
@@ -812,6 +842,9 @@ fn settingsView(st: *AppState) zigui.View {
         zigui.Slider(st.silence_db.binding(), -80, -20).frameMaxWidth(),
         zigui.Text(zigui.components.fmt("Fade in / out: {d:.1} s", .{st.fade_secs.get()})).font(.subheadline).foreground(c.secondary_label),
         zigui.Slider(st.fade_secs.binding(), 0, 5).frameMaxWidth(),
+        zigui.Button(if (st.norm_on) "Loudness normalization: on" else "Loudness normalization: off", zigui.actionCtx(AppState, st, onToggleNormalize)),
+        zigui.Text(zigui.components.fmt("Target loudness: {d:.0} dB ({d:.0} LUFS)", .{ st.norm_target.get(), st.norm_target.get() - @as(f32, @floatCast(loudness.reference_offset_db)) })).font(.subheadline).foreground(c.secondary_label),
+        zigui.Slider(st.norm_target.binding(), loudness.min_target_db, loudness.max_target_db).frameMaxWidth(),
         zigui.HStack(.{
             zigui.Spacer(),
             zigui.Button("Close", zigui.actionCtx(AppState, st, onCloseSettings)),
@@ -1038,6 +1071,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         .silence_db = zigui.State(f32).init(gpa, -34),
         .fade_secs = zigui.State(f32).init(gpa, 2),
         .fade_seen = 2,
+        .norm_target = zigui.State(f32).init(gpa, loudness.default_target_db),
     };
     defer {
         freeEntries(&st);
@@ -1050,6 +1084,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         st.wave_display.deinit();
         st.silence_db.deinit();
         st.fade_secs.deinit();
+        st.norm_target.deinit();
         st.wave_img.deinit(gpa);
     }
     g_app = &st;

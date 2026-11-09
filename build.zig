@@ -76,7 +76,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     addUnitTest(b, test_step, target, optimize, "tests/decoder_test.zig", "decoder", decoder_mod);
     // Pure modules with no dependencies of their own.
-    for ([_][]const u8{ "util", "transport", "waveform" }) |name| {
+    for ([_][]const u8{ "util", "transport", "waveform", "loudness" }) |name| {
         const mod = b.createModule(.{
             .root_source_file = b.path(b.fmt("src/{s}.zig", .{name})),
             .target = target,
