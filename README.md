@@ -2,6 +2,8 @@
 
 Dance Teacher’s Pet is a small, dependency-light audio player for Windows, written end to end in Zig, with a native-looking UI and no runtime to install.
 
+![Dance Teacher’s Pet playing a list of five tracks, with the loudness graph, the 1.30 dancer window and the play list](docs/screenshot.png)
+
 Download: [latest release](../../releases/latest) (`DanceTeachersPet-windows-x64.zip`: a single `DanceTeachersPet.exe`, SDL3 is built in). Unzip and run `DanceTeachersPet.exe`.
 
 ## Why it exists
