@@ -871,10 +871,6 @@ fn settingsView(st: *AppState) zigui.View {
     const c = colors();
     return zigui.VStack(.{
         zigui.Text("Settings").font(.title3),
-        zigui.Text(zigui.components.fmt("Number of lines: {d}", .{waveBars(st)})).font(.subheadline).foreground(c.secondary_label),
-        zigui.Slider(st.wave_lines.binding(), waveform.min_bars, waveform.max_bars).frameMaxWidth(),
-        zigui.Text(zigui.components.fmt("Line width: {d:.1}", .{st.wave_line_w.get()})).font(.subheadline).foreground(c.secondary_label),
-        zigui.Slider(st.wave_line_w.binding(), 0.1, 5.0).frameMaxWidth(),
         zigui.Text("Scale").font(.subheadline).foreground(c.secondary_label),
         zigui.Picker(st.wave_scale.binding(), &wave_scale_names),
         zigui.Text("Show").font(.subheadline).foreground(c.secondary_label),

@@ -82,7 +82,27 @@ zig build run -- "C:\Users\you\Music"
 * **Volume** slider on the right.
 * Errors (unreadable files, a missing audio device, a failed seek) show in the status bar instead of crashing the player.
 
-Defaults at start: volume 100 %, continuous playback off, skip silence on, dancer 1.30 on, remove played tracks on.
+### Settings panel
+
+The gear button opens the settings panel:
+
+* **Scale** (dB or linear) and **Show** (peak, RMS or both) control how the loudness graph is drawn.
+* **Silence below** (−80 to −20 dB, 1 s average) sets the threshold used by the Trim button.
+* **Fade in / out** (0 to 5 s) sets the fade length in dancer mode.
+* **Loudness normalization** on/off, with a **target loudness** (−24 to −7 LUFS) that every track is adjusted to, so all songs sound equally loud. A **limiter** (0 to 12 dB of gain reduction) keeps loud tracks from clipping when they are raised to the target.
+
+### Keyboard shortcuts
+
+| Key | Action |
+|---|---|
+| **Space** or any **letter** | Play/pause, same as the play/pause button |
+| **Up** / **Left** | Select the row above the current track (nothing happens if there is none) |
+| **Down** / **Right** | Select the row below the current track (nothing happens if there is none) |
+| **Delete** | Stop the music and remove the current track from the play list; the next row is cued |
+
+The arrow keys only start the new track if music was already playing; otherwise the row is loaded paused and you press play. Combinations with Ctrl, Alt or the Windows key are not treated as shortcuts.
+
+Defaults at start: volume 100 %, continuous playback off, skip silence on (−34 dB), dancer 1.30 on, fade 2 s, loudness normalization on (−10 LUFS, limiter 6 dB), remove played tracks on.
 
 ## Architecture
 
@@ -123,7 +143,7 @@ Dance-Teacher-s-Pet/
 * **Whole tracks are decoded into memory** before playing, synchronously on the UI thread. Large files cause a short pause on load and use memory proportional to their length.
 * **One fixed output format** (stereo float32 @ 44.1 kHz). Other sample rates are linearly resampled (not high-quality resampling) and sources with more than two channels use only the first two.
 * **Only MP3, FLAC and WAV.** Other files are ignored when added.
-* **No previous/next buttons, tags or cover art.** The title is derived from the file name.
+* **No previous/next buttons** (use the up/down arrow keys instead), **no tags or cover art.** The title is derived from the file name.
 * **Playback is tested by hand.** The unit tests cover decoding, track-end logic and helpers; actual audio output through WASAPI is not covered by automated tests.
 * A missing audio device leaves the UI usable but silent.
 
