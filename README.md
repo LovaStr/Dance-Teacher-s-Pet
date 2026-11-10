@@ -4,6 +4,16 @@ A small, dependency-light audio player for Windows, written end to end in Zig, w
 
 Download: [latest release](../../releases/latest) (`lmp3-windows-x64.zip`: a single `lmp3.exe`, SDL3 is built in). Unzip and run `lmp3.exe`.
 
+## Why it exists
+
+I teach dance courses, and I needed a music player that I could trust in the classroom. Three things mattered:
+
+* **It has to work offline.** I don't know if there will be internet where I teach, so streaming services are out. The player works with local MP3 and FLAC files (and WAV), and needs nothing but the files on the computer.
+* **The music must run for exactly as long as the exercise.** I pick the length of the exercise (1.30 or 3.00 minutes), start it, and the player stops by itself when the time is up. I never have to turn the music off myself, so I can keep my attention on the class.
+* **Every song must sound equally loud.** When songs come from different sources, the volume jumps from track to track. Here all tracks are normalized to the same perceived loudness, so I don't have to reach for the volume control between songs while I'm teaching.
+
+No existing player gave me all three, so I built lmp3: a simple player made for dance instructors like me.
+
 ## What it does
 
 Plays MP3, FLAC and WAV files in a single window. The window shows the current track (title, track N of M, elapsed/total time) with a loudness graph that doubles as a draggable seek slider, play/pause, a continuous-playback toggle, a skip-silence toggle, two "dancer" buttons (1.30 and 3.00), a remove-played-tracks toggle, a volume slider and the play list. Add files or folders from the window or on the command line (`lmp3 [file-or-folder ...]`), click a track to play it, and shuffle or clear the list.
