@@ -61,7 +61,8 @@ test "limiter reaches a target the peak cap alone cannot, without exceeding full
     const out = try gpa.alloc(f32, src.len);
     defer gpa.free(out);
 
-    loudness.normalize(gpa, src, out, m, -10, 6);
+    const whole: loudness.Region = .{ .start = 0, .end = src.len / 2 };
+    loudness.normalize(gpa, src, out, m, -10, 6, whole);
     var peak: f32 = 0;
     for (out) |s| peak = @max(peak, @abs(s));
     try expect(peak <= 1.0);
@@ -69,7 +70,7 @@ test "limiter reaches a target the peak cap alone cannot, without exceeding full
     try expectApproxEqAbs(@as(f64, -10.0), got.lufs, 0.5);
 
     // Without a limiter the peak cap holds the track much lower.
-    loudness.normalize(gpa, src, out, m, -10, 0);
+    loudness.normalize(gpa, src, out, m, -10, 0, whole);
     const capped = loudness.measure(gpa, out).?;
     try expect(capped.lufs < got.lufs - 1.5);
 }

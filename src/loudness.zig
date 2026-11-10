@@ -220,13 +220,17 @@ fn scaleInto(out: []f32, src: []const f32, g: f32) void {
     for (out, src) |*o, s| o.* = std.math.clamp(s * g, -1.0, 1.0);
 }
 
+/// A range of frames (`end` exclusive) whose loudness is what counts.
+pub const Region = struct { start: usize, end: usize };
+
 /// Fill `out` (same length as `src`, interleaved stereo) with `src` brought to
-/// `target_lufs`. `m` is the measurement of `src`. The gain is raised as far as a
+/// `target_lufs`. `m` is the measurement of `src` over `region` (the whole track,
+/// or just the part that plays); the re-measurements look at that region only. The gain is raised as far as a
 /// limiter that reduces peaks by at most `max_red_db` allows; the result is
 /// re-measured and the gain adjusted a few times, because limiting costs some
 /// loudness. With `max_red_db` 0 (or when memory is short) it is a plain gain
 /// that keeps the peak at full scale.
-pub fn normalize(gpa: std.mem.Allocator, src: []const f32, out: []f32, m: Result, target_lufs: f32, max_red_db: f32) void {
+pub fn normalize(gpa: std.mem.Allocator, src: []const f32, out: []f32, m: Result, target_lufs: f32, max_red_db: f32, region: Region) void {
     std.debug.assert(src.len == out.len);
     if (max_red_db < 0.05) {
         scaleInto(out, src, gainFor(m.lufs, m.peak, target_lufs, 0));
@@ -254,7 +258,7 @@ pub fn normalize(gpa: std.mem.Allocator, src: []const f32, out: []f32, m: Result
             out[i * 2 + 1] = std.math.clamp(src[i * 2 + 1] * k, -1.0, 1.0);
         }
         if (iter >= 3) return;
-        const got = measure(gpa, out) orelse return;
+        const got = measure(gpa, out[region.start * 2 .. region.end * 2]) orelse return;
         const err = @as(f64, target_lufs) - got.lufs;
         const next = @min(g_db + err, gainDb(m.lufs, m.peak, 1000, max_red_db));
         if (@abs(next - g_db) < 0.05) return;

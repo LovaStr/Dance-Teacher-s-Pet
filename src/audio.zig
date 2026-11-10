@@ -53,7 +53,9 @@ pub const Audio = struct {
     /// The settings that `track`'s samples were computed with.
     applied: ?NormKey = null,
 
-    const NormKey = struct { on: bool, target: f32, reduction: f32 };
+    /// `dancer` and `window` are part of the key because the loudness is measured
+    /// over the part that plays (see `loudRegion`).
+    const NormKey = struct { on: bool, target: f32, reduction: f32, dancer: bool, window: u32 };
 
     const SavedFade = struct {
         head_start: usize = 0,
@@ -111,7 +113,19 @@ pub const Audio = struct {
     }
 
     fn normKey(self: *const Audio) NormKey {
-        return .{ .on = self.normalize, .target = self.target_lufs, .reduction = self.max_reduction_db };
+        return .{ .on = self.normalize, .target = self.target_lufs, .reduction = self.max_reduction_db, .dancer = self.dancer, .window = self.window_secs };
+    }
+
+    /// The frames of `samples` (as decoded, unfaded) whose loudness decides the
+    /// gain: the loudest `window_secs` in dancer mode, else the whole track.
+    fn loudRegion(self: *const Audio, samples: []const f32) loudness.Region {
+        if (!self.dancer) return .{ .start = 0, .end = samples.len / decoder.channels };
+        const b = decoder.loudestWindow(samples, @as(usize, self.window_secs) * decoder.sample_rate);
+        return .{ .start = b.start, .end = b.end };
+    }
+
+    fn measureRegion(self: *const Audio, samples: []const f32, r: loudness.Region) ?loudness.Result {
+        return loudness.measure(self.gpa, samples[r.start * decoder.channels .. r.end * decoder.channels]);
     }
 
     /// Recompute `t`'s samples from `source` for the current normalization
@@ -121,9 +135,14 @@ pub const Audio = struct {
         if (self.applied) |a| if (std.meta.eql(a, key)) return;
         if (self.source.len != t.samples.len) return; // no copy: leave the track as decoded
         const first = self.applied == null;
+        const region = self.loudRegion(self.source);
+        if (self.applied) |a| {
+            // The part that plays changed: measure that part instead.
+            if (a.dancer != key.dancer or a.window != key.window) self.track_loudness = self.measureRegion(self.source, region);
+        }
         self.applied = key;
         if (self.normalize and self.track_loudness != null) {
-            loudness.normalize(self.gpa, self.source, t.samples, self.track_loudness.?, self.target_lufs, self.max_reduction_db);
+            loudness.normalize(self.gpa, self.source, t.samples, self.track_loudness.?, self.target_lufs, self.max_reduction_db, region);
         } else if (first) {
             return; // the samples are still the decoded ones
         } else {
@@ -137,7 +156,7 @@ pub const Audio = struct {
     /// Recompute `bounds` for the current settings (the fade must be restored).
     fn updateBounds(self: *Audio, t: *decoder.Track) void {
         self.bounds = if (self.dancer)
-            decoder.loudestWindow(t.samples, @as(usize, self.window_secs) * decoder.sample_rate)
+            decoder.loudestWindow(if (self.source.len == t.samples.len) self.source else t.samples, @as(usize, self.window_secs) * decoder.sample_rate)
         else if (self.trim_silence)
             decoder.audibleBounds(t.samples, self.silence_db, decoder.silence_window)
         else
@@ -192,7 +211,7 @@ pub const Audio = struct {
         // redraws it when a gain is applied).
         waveform.analyze(&self.peaks, t.samples);
         self.peaks_gen +%= 1;
-        self.track_loudness = loudness.measure(self.gpa, t.samples);
+        self.track_loudness = self.measureRegion(t.samples, self.loudRegion(t.samples));
         self.source = self.gpa.dupe(f32, t.samples) catch &.{};
         self.applied = null;
         self.rescale(t);
@@ -322,7 +341,11 @@ pub const Audio = struct {
     /// Switch loudness normalization on/off or change its target. The loaded
     /// track follows at once (same mechanism as `setTrimSilence`).
     pub fn setNormalization(self: *Audio, on: bool, target_lufs: f32, max_reduction_db: f32, keep_playing: bool) !void {
-        if (std.meta.eql(self.normKey(), NormKey{ .on = on, .target = target_lufs, .reduction = max_reduction_db })) return;
+        var want = self.normKey();
+        want.on = on;
+        want.target = target_lufs;
+        want.reduction = max_reduction_db;
+        if (std.meta.eql(self.normKey(), want)) return;
         self.normalize = on;
         self.target_lufs = target_lufs;
         self.max_reduction_db = max_reduction_db;
