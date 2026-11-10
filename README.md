@@ -1,8 +1,8 @@
-# lmp3_v2
+# Dance Teacher’s Pet
 
-A small, dependency-light audio player for Windows, written end to end in Zig, with a native-looking UI and no runtime to install.
+Dance Teacher’s Pet is a small, dependency-light audio player for Windows, written end to end in Zig, with a native-looking UI and no runtime to install.
 
-Download: [latest release](../../releases/latest) (`lmp3-windows-x64.zip`: a single `lmp3.exe`, SDL3 is built in). Unzip and run `lmp3.exe`.
+Download: [latest release](../../releases/latest) (`DanceTeachersPet-windows-x64.zip`: a single `DanceTeachersPet.exe`, SDL3 is built in). Unzip and run `DanceTeachersPet.exe`.
 
 ## Why it exists
 
@@ -12,11 +12,11 @@ I teach dance courses, and I needed a music player that I could trust in the cla
 * **The music must run for exactly as long as the exercise.** I pick the length of the exercise (1.30 or 3.00 minutes), start it, and the player stops by itself when the time is up. I never have to turn the music off myself, so I can keep my attention on the class.
 * **Every song must sound equally loud.** When songs come from different sources, the volume jumps from track to track. Here all tracks are normalized to the same perceived loudness, so I don't have to reach for the volume control between songs while I'm teaching.
 
-No existing player gave me all three, so I built lmp3: a simple player made for dance instructors like me.
+No existing player gave me all three, so I built Dance Teacher’s Pet: a simple player made for dance instructors like me.
 
 ## What it does
 
-Plays MP3, FLAC and WAV files in a single window. The window shows the current track (title, track N of M, elapsed/total time) with a loudness graph that doubles as a draggable seek slider, play/pause, a continuous-playback toggle, a skip-silence toggle, two "dancer" buttons (1.30 and 3.00), a remove-played-tracks toggle, a volume slider and the play list. Add files or folders from the window or on the command line (`lmp3 [file-or-folder ...]`), click a track to play it, and shuffle or clear the list.
+Plays MP3, FLAC and WAV files in a single window. The window shows the current track (title, track N of M, elapsed/total time) with a loudness graph that doubles as a draggable seek slider, play/pause, a continuous-playback toggle, a skip-silence toggle, two "dancer" buttons (1.30 and 3.00), a remove-played-tracks toggle, a volume slider and the play list. Add files or folders from the window or on the command line (`DanceTeachersPet [file-or-folder ...]`), click a track to play it, and shuffle or clear the list.
 
 It is also a working example of combining [zigui](https://github.com/ddalcu/zigui) (UI), [dr_libs](https://github.com/mackron/dr_libs) (decoding) and [zoto](https://github.com/braheezy/zoto) (audio output) in one program.
 
@@ -35,8 +35,8 @@ No accounts, API keys or external services are needed.
 ### Installation
 
 ```sh
-git clone https://github.com/LovaStr/lmp3_v2
-cd lmp3_v2
+git clone https://github.com/LovaStr/Dance-Teacher-s-Pet
+cd Dance-Teacher-s-Pet
 ```
 
 Dependencies (zigui, dr_libs, SDL3) are pinned with hashes in `build.zig.zon`, so the first `zig build` fetches them.
@@ -57,7 +57,7 @@ There is no `.env` file. Configuration is done with build options:
 zig build -Doptimize=ReleaseFast
 ```
 
-`lmp3.exe` ends up in `zig-out\bin`; it needs no other files. To build and start the player in one step:
+`DanceTeachersPet.exe` ends up in `zig-out\bin`; it needs no other files. To build and start the player in one step:
 
 ```sh
 zig build run -- "C:\Users\you\Music"
@@ -87,7 +87,7 @@ Defaults at start: volume 100 %, continuous playback off, skip silence on, dance
 Three layers with one direction of dependency: `decoder.zig` turns a file into PCM, `audio.zig` feeds that PCM to the zoto player, and `main.zig` holds the application state and the zigui views. The UI only calls `Audio` methods and reads `Audio` state; it never touches decoder or zoto internals. Every track is decoded fully into memory, folded to stereo and linearly resampled to the single output format (stereo float32 @ 44.1 kHz). Logic that does not need SDL, zigui or an audio device lives in small pure modules so it can be unit-tested. All dr_libs details stay behind a tiny C shim (`lm_decode.c`).
 
 ```
-lmp3_v2/
+Dance-Teacher-s-Pet/
 ├── src/
 │   ├── main.zig         # app state, zigui views, file dialogs, frame hook
 │   ├── audio.zig        # PCM -> zoto player: play, pause, seek, volume
@@ -113,7 +113,7 @@ lmp3_v2/
 | UI | [ddalcu/zigui](https://github.com/ddalcu/zigui) on [SDL3](https://github.com/libsdl-org/SDL), linked statically | Declarative views and a native-looking window without a runtime or extra DLL |
 | Decoding | [mackron/dr_libs](https://github.com/mackron/dr_libs) (`dr_mp3`, `dr_flac`, `dr_wav`) | Small single-header decoders for all three formats |
 | Playback | [braheezy/zoto](https://github.com/braheezy/zoto), vendored and patched | Minimal audio output; vendored so it can be trimmed to the WASAPI driver |
-| Build / release | `zig build` + GitHub Actions | CI cross-compiles on Linux and publishes `lmp3-windows-x64.zip` on every merge to `main` |
+| Build / release | `zig build` + GitHub Actions | CI cross-compiles on Linux and publishes `DanceTeachersPet-windows-x64.zip` on every merge to `main` |
 
 ## Limitations
 

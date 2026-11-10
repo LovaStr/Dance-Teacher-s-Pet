@@ -1,7 +1,7 @@
 .{
-    .name = .lmp3_v2,
+    .name = .dance_teachers_pet,
     .version = "0.1.0",
-    .fingerprint = 0xa80eb4966164b28f,
+    .fingerprint = 0xe45efac4443adb21,
     // zigui (current main) requires 0.17; zoto's Windows driver needed patching
     // (see third_party/zoto/PATCHES.md).
     .minimum_zig_version = "0.17.0",
