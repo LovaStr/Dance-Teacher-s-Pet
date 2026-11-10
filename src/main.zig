@@ -517,6 +517,42 @@ fn onRowTap(p: ?*anyopaque) void {
 
 // --- per-frame housekeeping (main thread) ----------------------------------
 
+/// Space or any letter acts like the play/pause button. Keys with Ctrl/Alt/Gui held are left alone.
+fn keyHandler(key: u32, mods: u16) bool {
+    const st = g_app orelse return false;
+    if (mods & (sdl.SDL_KMOD_CTRL | sdl.SDL_KMOD_ALT | sdl.SDL_KMOD_GUI) != 0) return false;
+    // Delete stops the music and removes the loaded track from the play list;
+    // the row that followed it becomes the cued track.
+    if (key == sdl.SDLK_DELETE) {
+        const c = st.current orelse return true;
+        stopAudio(st);
+        removeEntry(st, c);
+        st.cue = if (c < st.entries.items.len) c else 0;
+        st.setStatus("Removed from the play list", .{});
+        return true;
+    }
+    // Arrows act like clicking the row above (up/left) or below (down/right)
+    // the loaded track; with no such row nothing happens.
+    const prev = key == sdl.SDLK_UP or key == sdl.SDLK_LEFT;
+    const next = key == sdl.SDLK_DOWN or key == sdl.SDLK_RIGHT;
+    if (prev or next) {
+        const len = st.entries.items.len;
+        // Only start the music if it was already playing; otherwise just move.
+        const autoplay = st.isPlaying();
+        if (st.current) |c| {
+            if (prev and c > 0) loadIndex(st, c - 1, autoplay);
+            if (next and c + 1 < len) loadIndex(st, c + 1, autoplay);
+        } else if (next and st.cue < len) {
+            loadIndex(st, st.cue, false); // nothing loaded: "below" is the cued row
+        }
+        return true;
+    }
+    const is_letter = key >= sdl.SDLK_A and key <= sdl.SDLK_Z;
+    if (key != sdl.SDLK_SPACE and !is_letter) return false;
+    togglePlayPause(st);
+    return true;
+}
+
 fn frameHook() void {
     const st = g_app orelse return;
 
@@ -1122,6 +1158,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     app.setThemeProvider(themeProvider);
     app.setFrameHook(frameHook);
+    app.setKeyHandler(keyHandler);
     app.setBusyCheck(busyCheck);
 
     try app.run(gpa, AppState, &st, .{
