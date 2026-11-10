@@ -31,18 +31,18 @@ jobs:
         run: |
           short=$(git rev-parse --short HEAD)
           echo "VERSION=build-${{ github.run_number }}-$short" >> "$GITHUB_ENV"
-          (cd zig-out/bin && zip -9 "$GITHUB_WORKSPACE/lmp3-windows-x64.zip" lmp3.exe)
+          (cd zig-out/bin && zip -9 "$GITHUB_WORKSPACE/DanceTeachersPet-windows-x64.zip" DanceTeachersPet.exe)
 
       - uses: actions/upload-artifact@v4
         if: github.event_name == 'pull_request'
         with:
-          name: lmp3-windows-x64
-          path: lmp3-windows-x64.zip
+          name: DanceTeachersPet-windows-x64
+          path: DanceTeachersPet-windows-x64.zip
 
       - name: Create release
         if: github.event_name == 'push'
         run: >
-          gh release create "$VERSION" lmp3-windows-x64.zip
+          gh release create "$VERSION" DanceTeachersPet-windows-x64.zip
           --target "$GITHUB_SHA"
-          --title "lmp3 $VERSION"
+          --title "Dance Teacher’s Pet $VERSION"
           --generate-notes

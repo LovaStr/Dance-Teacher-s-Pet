@@ -6,7 +6,7 @@
 #
 #   powershell -File tools/gen_icons.ps1
 #
-# (GDI+ is used only to draw; nothing here is needed to build lmp3.)
+# (GDI+ is used only to draw; nothing here is needed to build Dance Teacher’s Pet.)
 
 Add-Type -AssemblyName System.Drawing
 $S = 60

@@ -1,10 +1,10 @@
-//! lmp3 — a small audio player.
+//! Dance Teacher’s Pet — a small audio player.
 //!
 //!   UI        ddalcu/zigui        (single page: now playing + play list)
 //!   decoding  mackron/dr_libs     (MP3 / FLAC / WAV, see decoder.zig)
 //!   playback  braheezy/zoto       (see audio.zig)
 //!
-//! Usage:  lmp3 [file-or-folder ...]
+//! Usage:  DanceTeachersPet [file-or-folder ...]
 
 const std = @import("std");
 const zigui = @import("zigui");
@@ -987,7 +987,7 @@ fn playlist(st: *AppState) zigui.View {
         return zigui.VStack(.{
             zigui.Spacer(),
             zigui.Text("The play list is empty").font(.headline).foreground(c.secondary_label),
-            zigui.Text("Use “Add files…” or “Add folder…”, or start lmp3 with paths.")
+            zigui.Text("Use “Add files…” or “Add folder…”, or start Dance Teacher’s Pet with paths.")
                 .font(.subheadline).foreground(c.tertiary_label),
             zigui.Spacer(),
         }).spacing(layout.empty_spacing).frameMaxWidth().frameMaxHeight();
@@ -1125,7 +1125,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     app.setBusyCheck(busyCheck);
 
     try app.run(gpa, AppState, &st, .{
-        .title = "lmp3 — audio player",
+        .title = "Dance Teacher’s Pet",
         .width = layout.window_w,
         .height = layout.window_h,
         .min_width = layout.window_min_w,
