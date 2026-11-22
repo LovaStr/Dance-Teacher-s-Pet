@@ -11,6 +11,7 @@ const zigui = @import("zigui");
 const app = @import("zigui_app");
 const decoder = @import("decoder.zig");
 const util = @import("util.zig");
+const tags = @import("tags.zig");
 const transport = @import("transport.zig");
 const waveform = @import("waveform.zig");
 const loudness = @import("loudness.zig");
@@ -188,12 +189,33 @@ fn describeError(err: anyerror) []const u8 {
     };
 }
 
+fn readTagBytes(ctx: *anyopaque, offset: u64, buf: []u8) usize {
+    const io: *sdl.SDL_IOStream = @ptrCast(@alignCast(ctx));
+    if (sdl.SDL_SeekIO(io, @intCast(offset), sdl.SDL_IO_SEEK_SET) < 0) return 0;
+    return sdl.SDL_ReadIO(io, buf.ptr, buf.len);
+}
+
+/// Display name for a play list row: "title - artist" from the file's tags,
+/// else the file name without extension. Never fails because of the tags.
+fn tagTitle(gpa: std.mem.Allocator, path: []const u8) error{OutOfMemory}![]u8 {
+    const fallback = util.titleOf(path);
+    const cpath = try gpa.dupeSentinel(u8, path, 0);
+    defer gpa.free(cpath);
+    const io = sdl.SDL_IOFromFile(cpath.ptr, "rb") orelse return gpa.dupe(u8, fallback);
+    defer _ = sdl.SDL_CloseIO(io);
+    const size = sdl.SDL_GetIOSize(io);
+    if (size <= 0) return gpa.dupe(u8, fallback);
+    const src: tags.Source = .{ .ctx = io, .readFn = readTagBytes, .size = @intCast(size) };
+    const found = tags.read(src, std.ascii.endsWithIgnoreCase(path, ".mp3"));
+    return tags.displayName(gpa, &found, fallback);
+}
+
 /// Append one audio file to the play list (unsupported extensions are ignored).
 fn addFile(st: *AppState, path: []const u8) error{OutOfMemory}!void {
     if (!decoder.isSupported(path)) return;
     const owned = try st.gpa.dupe(u8, path);
     errdefer st.gpa.free(owned);
-    const title = try st.gpa.dupe(u8, util.titleOf(path));
+    const title = try tagTitle(st.gpa, path);
     errdefer st.gpa.free(title);
     try st.entries.append(st.gpa, .{ .path = owned, .title = title });
 }
@@ -1054,8 +1076,7 @@ fn playlist(st: *AppState) zigui.View {
 
         var row = zigui.HStack(.{
             lead.frameWidth(layout.row_lead_w),
-            zigui.Text(e.title).truncated(),
-            zigui.Spacer(),
+            zigui.Text(e.title).truncated().frameMaxWidth().frameAlign(.leading),
         }).spacing(layout.row_spacing)
             .paddingInsets(.{ .top = layout.row_v, .leading = layout.margin_h, .bottom = layout.row_v, .trailing = layout.margin_h })
             .frameMaxWidth();
